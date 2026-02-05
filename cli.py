@@ -35,6 +35,10 @@ def main() -> None:
     print(f"Quarters covered: {artifacts.dataset_meta['quarter'].nunique()}")
 
     preds = bt.predictions.copy()
+    if "asof_close" not in preds.columns and "y_pred_naive" in preds.columns:
+        preds["asof_close"] = preds["y_pred_naive"]
+    if "ret_20d" not in preds.columns:
+        preds["ret_20d"] = 0.0
     earliest = preds.sort_values("asof_date").groupby("quarter", as_index=False).first()
     earliest["abs_err_model"] = (earliest["y_true"] - earliest["y_pred_model"]).abs()
     earliest["abs_err_naive"] = (earliest["y_true"] - earliest["y_pred_naive"]).abs()
