@@ -168,12 +168,12 @@ def forecast_next_quarter_end(
         cal_y = pd.Series(y_all_delta[-calib_size:], index=cal_X.index)
         quantile_models = train_quantile_models(fit_X, fit_y)
         cal_pred = predict_quantiles(quantile_models, cal_X)
-        q_hat = conformal_qhat(
-            cal_y.to_numpy(),
-            cal_pred["delta_p10"].to_numpy(),
-            cal_pred["delta_p90"].to_numpy(),
-            alpha=0.2,
+        cal_scores = np.maximum(
+            cal_pred["delta_p10"].to_numpy() - cal_y.to_numpy(),
+            cal_y.to_numpy() - cal_pred["delta_p90"].to_numpy(),
         )
+        cal_scores = np.maximum(cal_scores, 0.0)
+        q_hat = conformal_qhat(cal_scores, cfg.model.interval_alpha)
     else:
         quantile_models = artifacts.quantile_models
         q_hat = 0.0

@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 
 from config import ModelSpec
+from collections import deque
+
 from calibration import apply_conformal, conformal_qhat
 from model import predict, train_model, train_quantile_models, predict_quantiles
 
@@ -33,6 +35,11 @@ def _rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 def _pinball(y_true: np.ndarray, y_pred: np.ndarray, q: float) -> float:
     diff = y_true - y_pred
     return float(np.mean(np.maximum(q * diff, (q - 1) * diff)))
+
+
+def _nonconformity_scores(y_true: np.ndarray, p10: np.ndarray, p90: np.ndarray) -> np.ndarray:
+    scores = np.maximum(p10 - y_true, y_true - p90)
+    return np.maximum(scores, 0.0)
 
 
 def select_features_for_model(X: pd.DataFrame, model_type: str) -> pd.DataFrame:
@@ -102,6 +109,8 @@ def walk_forward_by_quarter(
     """
     if hybrid_model not in {"ridge", "tree", "both"}:
         raise ValueError("hybrid_model must be one of: ridge, tree, both")
+    if model_spec.calibration_mode not in {"per_fold", "pooled", "rolling"}:
+        raise ValueError("calibration_mode must be one of: per_fold, pooled, rolling")
 
     df = meta.copy()
     df["y_true"] = y.values
@@ -111,6 +120,8 @@ def walk_forward_by_quarter(
     unique_qends = sorted(df["qend_date"].unique())
     preds_rows: List[pd.DataFrame] = []
     ridge_alpha = _choose_ridge_alpha(X, y, meta, model_spec)
+    pooled_scores: List[float] = []
+    rolling_scores = deque(maxlen=model_spec.rolling_folds)
 
     for i, qend in enumerate(unique_qends):
         train_qends = unique_qends[:i]
@@ -156,12 +167,24 @@ def walk_forward_by_quarter(
             cal_y = y_train_delta.iloc[-calib_size:]
             quantile_models = train_quantile_models(fit_X, fit_y)
             cal_pred = predict_quantiles(quantile_models, cal_X)
-            q_hat = conformal_qhat(
+            cal_scores = _nonconformity_scores(
                 cal_y.to_numpy(),
                 cal_pred["delta_p10"].to_numpy(),
                 cal_pred["delta_p90"].to_numpy(),
-                alpha=0.2,
             )
+            pooled_scores.extend(cal_scores.tolist())
+            rolling_scores.append(cal_scores)
+            alpha = model_spec.interval_alpha
+            if model_spec.calibration_mode == "pooled" and len(pooled_scores) >= model_spec.min_pool_size:
+                q_hat = conformal_qhat(np.asarray(pooled_scores), alpha)
+            elif model_spec.calibration_mode == "rolling" and rolling_scores:
+                window_scores = np.concatenate(list(rolling_scores))
+                if len(window_scores) >= model_spec.min_pool_size:
+                    q_hat = conformal_qhat(window_scores, alpha)
+                else:
+                    q_hat = conformal_qhat(cal_scores, alpha)
+            else:
+                q_hat = conformal_qhat(cal_scores, alpha)
         else:
             quantile_models = train_quantile_models(X_train, y_train_delta)
             q_hat = 0.0

@@ -82,6 +82,18 @@ def main() -> None:
         default=True,
         help="Report prediction intervals and coverage. Default: True.",
     )
+    parser.add_argument(
+        "--interval-alpha",
+        type=float,
+        default=0.2,
+        help="Interval alpha (0.2 -> 80% coverage). Default: 0.2.",
+    )
+    parser.add_argument(
+        "--calibration-mode",
+        choices=["per_fold", "pooled", "rolling"],
+        default="pooled",
+        help="Conformal calibration mode. Default: pooled.",
+    )
     args = parser.parse_args()
 
     csv_path = Path(args.csv)
@@ -101,7 +113,13 @@ def main() -> None:
         ridge_grid = [float(x.strip()) for x in args.ridge_alpha_grid.split(",") if x.strip()]
     cfg = replace(
         cfg,
-        model=replace(cfg.model, ridge_alpha=args.ridge_alpha, ridge_alpha_grid=ridge_grid),
+        model=replace(
+            cfg.model,
+            ridge_alpha=args.ridge_alpha,
+            ridge_alpha_grid=ridge_grid,
+            interval_alpha=args.interval_alpha,
+            calibration_mode=args.calibration_mode,
+        ),
     )
 
     prices = load_bl2c1_csv(csv_path)
@@ -213,9 +231,19 @@ def main() -> None:
         print(f"  {k}: {v:.4f}")
     if args.intervals:
         print("\nInterval metrics (p10/p50/p90):")
-        for key in ["MAE_p50", "MAPE_p50", "coverage_80_raw", "avg_width_80_raw", "coverage_80_cal", "avg_width_80_cal"]:
+        target = 1 - cfg.model.interval_alpha
+        print(f"  coverage_target: {target:.4f}")
+        metric_map = [
+            ("MAE_p50", "MAE_p50"),
+            ("MAPE_p50", "MAPE_p50"),
+            ("coverage_80_raw", "coverage_raw"),
+            ("avg_width_80_raw", "width_raw"),
+            ("coverage_80_cal", "coverage_cal"),
+            ("avg_width_80_cal", "width_cal"),
+        ]
+        for key, label in metric_map:
             if key in bt.metrics:
-                print(f"  {key}: {bt.metrics[key]:.4f}")
+                print(f"  {label}: {bt.metrics[key]:.4f}")
 
     print(f"Rows used: {len(artifacts.dataset_meta)}")
     print(f"Quarters covered: {artifacts.dataset_meta['quarter'].nunique()}")
@@ -242,6 +270,7 @@ def main() -> None:
             "q_hat stats:",
             f"mean={q_hat_vals.mean():.4f}",
             f"median={q_hat_vals.median():.4f}",
+            f"p90={np.nanpercentile(q_hat_vals, 90):.4f}",
             f"max={q_hat_vals.max():.4f}",
         )
     earliest = preds.sort_values("asof_date").groupby("quarter", as_index=False).first()
