@@ -65,9 +65,9 @@ def _validate_price_series(df: pd.DataFrame) -> ValidationResult:
     return ValidationResult(warnings=warnings)
 
 
-def load_bl2c1_csv(path: str | Path) -> pd.DataFrame:
+def _load_continuation_csv(path: str | Path) -> pd.DataFrame:
     """
-    Load single-series LSEG BL2c1 continuation (Close/Settlement).
+    Load single-series LSEG continuation (Close/Settlement).
     Returns a DataFrame indexed by date with columns: close, settlement.
     """
     csv_path = Path(path)
@@ -98,3 +98,20 @@ def load_bl2c1_csv(path: str | Path) -> pd.DataFrame:
         print(warning_text)
 
     return df.set_index("date")
+
+
+def load_bl2c1_csv(path: str | Path) -> pd.DataFrame:
+    """
+    Load single-series LSEG BL2c1 continuation (Close/Settlement).
+    Returns a DataFrame indexed by date with columns: close, settlement.
+    """
+    return _load_continuation_csv(path)
+
+
+def load_bl2c2_csv(path: str | Path) -> pd.DataFrame:
+    """
+    Load single-series LSEG BL2c2 continuation (Close/Settlement).
+    Returns a DataFrame indexed by date with columns: close_c2, settlement_c2.
+    """
+    df = _load_continuation_csv(path)
+    return df.rename(columns={"close": "close_c2", "settlement": "settlement_c2"})

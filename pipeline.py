@@ -7,7 +7,8 @@ from typing import Optional
 import pandas as pd
 
 from config import AppConfig
-from data_loader import load_bl2c1_csv
+from data_loader import load_bl2c1_csv, load_bl2c2_csv
+import features
 from features import add_market_features, add_macro_return_features, latest_available_merge
 from dataset import build_quarter_end_dataset
 from model import train_model, TrainedModel
@@ -34,6 +35,7 @@ def load_optional_table(path: Optional[Path]) -> Optional[pd.DataFrame]:
 def run_training_pipeline(
     cfg: AppConfig,
     price_csv_path: str,
+    price_csv_c2_path: str | None = None,
     primary_only: bool = True,
     hybrid_threshold: float = 10.0,
     enable_hybrid: bool = True,
@@ -52,6 +54,14 @@ def run_training_pipeline(
     trading_days = pd.DatetimeIndex(prices.index).sort_values()
     feats = add_market_features(prices)
 
+    if price_csv_c2_path:
+        c2_path = Path(price_csv_c2_path)
+        if c2_path.exists():
+            c2 = load_bl2c2_csv(c2_path)
+            feats = feats.join(c2[["close_c2", "settlement_c2"]], how="left")
+            feats["close_c2"] = pd.to_numeric(feats["close_c2"], errors="coerce")
+            feats["close_c2__is_missing"] = feats["close_c2"].isna().astype(float)
+
     macro = load_optional_table(cfg.data.macro_path)
     if macro is not None:
         if "available_at" not in macro.columns:
@@ -67,6 +77,9 @@ def run_training_pipeline(
             feats = latest_available_merge(feats, fundamentals, asof_col="available_at")
 
     feats = add_macro_return_features(feats)
+    add_term_structure = getattr(features, "add_term_structure_features", None)
+    if add_term_structure is not None:
+        feats = add_term_structure(feats)
 
     ds = build_quarter_end_dataset(
         features_daily=feats,
