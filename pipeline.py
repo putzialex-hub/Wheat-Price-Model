@@ -8,12 +8,8 @@ import pandas as pd
 
 from config import AppConfig
 from data_loader import load_bl2c1_csv, load_bl2c2_csv
-from features import (
-    add_market_features,
-    add_macro_return_features,
-    add_term_structure_features,
-    latest_available_merge,
-)
+import features
+from features import add_market_features, add_macro_return_features, latest_available_merge
 from dataset import build_quarter_end_dataset
 from model import train_model, TrainedModel
 from backtest import BacktestResult, walk_forward_by_quarter
@@ -81,7 +77,9 @@ def run_training_pipeline(
             feats = latest_available_merge(feats, fundamentals, asof_col="available_at")
 
     feats = add_macro_return_features(feats)
-    feats = add_term_structure_features(feats)
+    add_term_structure = getattr(features, "add_term_structure_features", None)
+    if add_term_structure is not None:
+        feats = add_term_structure(feats)
 
     ds = build_quarter_end_dataset(
         features_daily=feats,
