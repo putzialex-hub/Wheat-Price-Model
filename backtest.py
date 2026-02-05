@@ -6,8 +6,8 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
-from .config import ModelSpec
-from .model import train_model, predict
+from config import ModelSpec
+from model import train_model, predict
 
 
 @dataclass(frozen=True)
