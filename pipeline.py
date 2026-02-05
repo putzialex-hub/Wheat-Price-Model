@@ -8,7 +8,7 @@ import pandas as pd
 
 from config import AppConfig
 from data_loader import load_bl2c1_csv
-from features import add_market_features, latest_available_merge
+from features import add_market_features, add_macro_return_features, latest_available_merge
 from dataset import build_quarter_end_dataset
 from model import train_model, TrainedModel
 from backtest import BacktestResult, walk_forward_by_quarter
@@ -24,13 +24,20 @@ class PipelineArtifacts:
 def load_optional_table(path: Optional[Path]) -> Optional[pd.DataFrame]:
     if path is None:
         return None
-    return pd.read_csv(path)
+    if not path.exists():
+        return None
+    df = pd.read_csv(path, sep=None, engine="python")
+    df = df.rename(columns=lambda c: str(c).lstrip("\ufeff").strip())
+    return df
 
 
 def run_training_pipeline(
     cfg: AppConfig,
     price_csv_path: str,
     primary_only: bool = True,
+    hybrid_threshold: float = 10.0,
+    enable_hybrid: bool = True,
+    hybrid_model: str = "ridge",
 ) -> tuple[TrainedModel, PipelineArtifacts, BacktestResult]:
     """
     End-to-end:
@@ -47,11 +54,19 @@ def run_training_pipeline(
 
     macro = load_optional_table(cfg.data.macro_path)
     if macro is not None:
-        feats = latest_available_merge(feats, macro, asof_col="available_at")
+        if "available_at" not in macro.columns:
+            print("Warning: macro CSV missing 'available_at' column; skipping macro merge.")
+        else:
+            feats = latest_available_merge(feats, macro, asof_col="available_at")
 
     fundamentals = load_optional_table(cfg.data.fundamentals_path)
     if fundamentals is not None:
-        feats = latest_available_merge(feats, fundamentals, asof_col="available_at")
+        if "available_at" not in fundamentals.columns:
+            print("Warning: fundamentals CSV missing 'available_at' column; skipping merge.")
+        else:
+            feats = latest_available_merge(feats, fundamentals, asof_col="available_at")
+
+    feats = add_macro_return_features(feats)
 
     ds = build_quarter_end_dataset(
         features_daily=feats,
@@ -62,7 +77,15 @@ def run_training_pipeline(
     )
 
     # Backtest
-    bt = walk_forward_by_quarter(ds.X, ds.y, ds.meta, cfg.model)
+    bt = walk_forward_by_quarter(
+        ds.X,
+        ds.y,
+        ds.meta,
+        cfg.model,
+        hybrid_threshold=hybrid_threshold,
+        enable_hybrid=enable_hybrid,
+        hybrid_model=hybrid_model,
+    )
 
     # Train final model on full dataset (delta target)
     y_delta = ds.y.to_numpy() - ds.X["asof_close"].astype(float).to_numpy()
