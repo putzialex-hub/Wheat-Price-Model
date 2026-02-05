@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -75,6 +76,12 @@ def main() -> None:
         action="store_true",
         help="Disable hybrid reporting (use pure model outputs).",
     )
+    parser.add_argument(
+        "--intervals",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Report prediction intervals and coverage. Default: True.",
+    )
     args = parser.parse_args()
 
     csv_path = Path(args.csv)
@@ -89,9 +96,13 @@ def main() -> None:
         macro_path = None
 
     cfg = AppConfig(data=DataPaths(contracts_path=csv_path, macro_path=macro_path))
-    cfg.model.ridge_alpha = args.ridge_alpha
+    ridge_grid = None
     if args.ridge_alpha_grid:
-        cfg.model.ridge_alpha_grid = [float(x.strip()) for x in args.ridge_alpha_grid.split(",") if x.strip()]
+        ridge_grid = [float(x.strip()) for x in args.ridge_alpha_grid.split(",") if x.strip()]
+    cfg = replace(
+        cfg,
+        model=replace(cfg.model, ridge_alpha=args.ridge_alpha, ridge_alpha_grid=ridge_grid),
+    )
 
     prices = load_bl2c1_csv(csv_path)
     feats = add_market_features(prices)
@@ -200,6 +211,11 @@ def main() -> None:
     print("Backtest metrics:")
     for k, v in bt.metrics.items():
         print(f"  {k}: {v:.4f}")
+    if args.intervals:
+        print("\nInterval metrics (p10/p50/p90):")
+        for key in ["MAE_p50", "MAPE_p50", "coverage_80", "avg_width_80"]:
+            if key in bt.metrics:
+                print(f"  {key}: {bt.metrics[key]:.4f}")
 
     print(f"Rows used: {len(artifacts.dataset_meta)}")
     print(f"Quarters covered: {artifacts.dataset_meta['quarter'].nunique()}")
@@ -330,7 +346,14 @@ def main() -> None:
     try:
         fc = forecast_next_quarter_end(model, artifacts, cfg)
         print("\nLatest weekly forecast (stub):")
-        print(fc.to_string(index=False))
+        if {"p10", "p90"}.issubset(fc.columns):
+            if "risk_score" not in fc.columns:
+                fc = fc.copy()
+                fc["risk_score"] = fc["p90"] - fc["p10"]
+            cols = [c for c in ["asof_date", "forecast_p50", "p10", "p90", "risk_score"] if c in fc.columns]
+            print(fc[cols].to_string(index=False))
+        else:
+            print(fc.to_string(index=False))
     except Exception as e:
         print(f"\nLive forecast not produced: {e}")
 

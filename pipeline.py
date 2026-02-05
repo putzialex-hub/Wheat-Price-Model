@@ -11,7 +11,13 @@ from data_loader import load_bl2c1_csv, load_bl2c2_csv
 import features
 from features import add_market_features, add_macro_return_features, latest_available_merge
 from dataset import build_quarter_end_dataset
-from model import train_model, TrainedModel
+from model import (
+    TrainedModel,
+    QuantileModels,
+    predict_quantiles,
+    train_model,
+    train_quantile_models,
+)
 from backtest import BacktestResult, walk_forward_by_quarter
 
 
@@ -20,6 +26,7 @@ class PipelineArtifacts:
     prices: pd.DataFrame
     features_daily: pd.DataFrame
     dataset_meta: pd.DataFrame
+    quantile_models: QuantileModels | None
 
 
 def load_optional_table(path: Optional[Path]) -> Optional[pd.DataFrame]:
@@ -103,11 +110,13 @@ def run_training_pipeline(
     # Train final model on full dataset (delta target)
     y_delta = ds.y.to_numpy() - ds.X["asof_close"].astype(float).to_numpy()
     model = train_model(ds.X, pd.Series(y_delta, index=ds.y.index), cfg.model, model_type="tree")
+    quantile_models = train_quantile_models(ds.X, pd.Series(y_delta, index=ds.y.index))
 
     artifacts = PipelineArtifacts(
         prices=prices,
         features_daily=feats,
         dataset_meta=ds.meta,
+        quantile_models=quantile_models,
     )
 
     return model, artifacts, bt
@@ -142,4 +151,20 @@ def forecast_next_quarter_end(
     delta_pred = model.pipeline.predict(X_live)[0]
     asof_close = float(X_live["asof_close"].iloc[0])
     forecast = asof_close + float(delta_pred)
-    return pd.DataFrame({"asof_date": [asof_date], "forecast_qend": [forecast]})
+    if artifacts.quantile_models is None:
+        return pd.DataFrame({"asof_date": [asof_date], "forecast_qend": [forecast]})
+    delta_q = predict_quantiles(artifacts.quantile_models, X_live).iloc[0]
+    p10 = asof_close + float(delta_q["delta_p10"])
+    p50 = asof_close + float(delta_q["delta_p50"])
+    p90 = asof_close + float(delta_q["delta_p90"])
+    risk_score = p90 - p10
+    return pd.DataFrame(
+        {
+            "asof_date": [asof_date],
+            "forecast_qend": [forecast],
+            "forecast_p50": [p50],
+            "p10": [p10],
+            "p90": [p90],
+            "risk_score": [risk_score],
+        }
+    )

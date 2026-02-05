@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from config import ModelSpec
-from model import train_model, predict
+from model import predict, train_model, train_quantile_models, predict_quantiles
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,11 @@ def _mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
 def _rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+
+
+def _pinball(y_true: np.ndarray, y_pred: np.ndarray, q: float) -> float:
+    diff = y_true - y_pred
+    return float(np.mean(np.maximum(q * diff, (q - 1) * diff)))
 
 
 def select_features_for_model(X: pd.DataFrame, model_type: str) -> pd.DataFrame:
@@ -142,12 +147,20 @@ def walk_forward_by_quarter(
         )
         delta_pred_ridge = predict(ridge_model, X_test_ridge)
 
+        quantile_models = train_quantile_models(X_train, y_train_delta)
+        delta_quantiles = predict_quantiles(quantile_models, X_test)
+
         if delta_clip is not None:
             delta_pred_tree = np.clip(delta_pred_tree, -delta_clip, delta_clip)
             delta_pred_ridge = np.clip(delta_pred_ridge, -delta_clip, delta_clip)
+            for col in ["delta_p10", "delta_p50", "delta_p90"]:
+                delta_quantiles[col] = np.clip(delta_quantiles[col], -delta_clip, delta_clip)
 
         y_pred_tree = asof_close + delta_pred_tree
         y_pred_ridge = asof_close + delta_pred_ridge
+        y_pred_p10 = asof_close + delta_quantiles["delta_p10"].to_numpy()
+        y_pred_p50 = asof_close + delta_quantiles["delta_p50"].to_numpy()
+        y_pred_p90 = asof_close + delta_quantiles["delta_p90"].to_numpy()
         y_pred_naive = asof_close
         y_pred_mom = asof_close * (1.0 + ret_20d)
 
@@ -173,6 +186,9 @@ def walk_forward_by_quarter(
         out = df[df["row_id"].isin(test_idx)].copy()
         out["y_pred_tree"] = y_pred_tree
         out["y_pred_ridge"] = y_pred_ridge
+        out["y_pred_p10"] = y_pred_p10
+        out["y_pred_p50"] = y_pred_p50
+        out["y_pred_p90"] = y_pred_p90
         if y_pred_hybrid_tree is not None:
             out["y_pred_hybrid_tree"] = y_pred_hybrid_tree
             out["use_model_tree"] = use_model_tree.astype(int)
@@ -194,6 +210,9 @@ def walk_forward_by_quarter(
     y_true = preds["y_true"].to_numpy()
     y_pred_tree = preds["y_pred_tree"].to_numpy()
     y_pred_ridge = preds["y_pred_ridge"].to_numpy()
+    y_pred_p10 = preds["y_pred_p10"].to_numpy()
+    y_pred_p50 = preds["y_pred_p50"].to_numpy()
+    y_pred_p90 = preds["y_pred_p90"].to_numpy()
     y_pred_naive = preds["y_pred_naive"].to_numpy()
     y_pred_mom = preds["y_pred_mom"].to_numpy()
 
@@ -204,6 +223,13 @@ def walk_forward_by_quarter(
         "MAE_ridge": _mae(y_true, y_pred_ridge),
         "RMSE_ridge": _rmse(y_true, y_pred_ridge),
         "MAPE_ridge": _mape(y_true, y_pred_ridge),
+        "MAE_p50": _mae(y_true, y_pred_p50),
+        "MAPE_p50": _mape(y_true, y_pred_p50),
+        "coverage_80": float(np.mean((y_true >= y_pred_p10) & (y_true <= y_pred_p90))),
+        "avg_width_80": float(np.mean(y_pred_p90 - y_pred_p10)),
+        "pinball_p10": _pinball(y_true, y_pred_p10, 0.1),
+        "pinball_p50": _pinball(y_true, y_pred_p50, 0.5),
+        "pinball_p90": _pinball(y_true, y_pred_p90, 0.9),
         "MAE_naive": _mae(y_true, y_pred_naive),
         "RMSE_naive": _rmse(y_true, y_pred_naive),
         "MAPE_naive": _mape(y_true, y_pred_naive),
