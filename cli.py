@@ -213,7 +213,7 @@ def main() -> None:
         print(f"  {k}: {v:.4f}")
     if args.intervals:
         print("\nInterval metrics (p10/p50/p90):")
-        for key in ["MAE_p50", "MAPE_p50", "coverage_80", "avg_width_80"]:
+        for key in ["MAE_p50", "MAPE_p50", "coverage_80_raw", "avg_width_80_raw", "coverage_80_cal", "avg_width_80_cal"]:
             if key in bt.metrics:
                 print(f"  {key}: {bt.metrics[key]:.4f}")
 
@@ -236,6 +236,14 @@ def main() -> None:
         usage_parts.append(f"ridge={usage_ridge:.3f}")
     if usage_parts:
         print("Hybrid usage rate:", " ".join(usage_parts))
+    if args.intervals and "q_hat" in preds.columns:
+        q_hat_vals = preds["q_hat"]
+        print(
+            "q_hat stats:",
+            f"mean={q_hat_vals.mean():.4f}",
+            f"median={q_hat_vals.median():.4f}",
+            f"max={q_hat_vals.max():.4f}",
+        )
     earliest = preds.sort_values("asof_date").groupby("quarter", as_index=False).first()
     earliest["abs_err_tree"] = (earliest["y_true"] - earliest["y_pred_tree"]).abs()
     earliest["abs_err_ridge"] = (earliest["y_true"] - earliest["y_pred_ridge"]).abs()
@@ -346,11 +354,19 @@ def main() -> None:
     try:
         fc = forecast_next_quarter_end(model, artifacts, cfg)
         print("\nLatest weekly forecast (stub):")
-        if {"p10", "p90"}.issubset(fc.columns):
-            if "risk_score" not in fc.columns:
-                fc = fc.copy()
-                fc["risk_score"] = fc["p90"] - fc["p10"]
-            cols = [c for c in ["asof_date", "forecast_p50", "p10", "p90", "risk_score"] if c in fc.columns]
+        if {"p10_raw", "p90_raw", "p10_cal", "p90_cal"}.issubset(fc.columns):
+            cols = [
+                "asof_date",
+                "forecast_p50",
+                "p10_raw",
+                "p90_raw",
+                "p10_cal",
+                "p90_cal",
+                "risk_score_raw",
+                "risk_score_cal",
+                "q_hat",
+            ]
+            cols = [c for c in cols if c in fc.columns]
             print(fc[cols].to_string(index=False))
         else:
             print(fc.to_string(index=False))

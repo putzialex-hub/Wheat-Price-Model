@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from config import ModelSpec
+from calibration import apply_conformal, conformal_qhat
 from model import predict, train_model, train_quantile_models, predict_quantiles
 
 
@@ -147,7 +148,23 @@ def walk_forward_by_quarter(
         )
         delta_pred_ridge = predict(ridge_model, X_test_ridge)
 
-        quantile_models = train_quantile_models(X_train, y_train_delta)
+        calib_size = max(20, int(len(X_train) * 0.2))
+        if len(X_train) > calib_size:
+            fit_X = X_train.iloc[:-calib_size]
+            fit_y = y_train_delta.iloc[:-calib_size]
+            cal_X = X_train.iloc[-calib_size:]
+            cal_y = y_train_delta.iloc[-calib_size:]
+            quantile_models = train_quantile_models(fit_X, fit_y)
+            cal_pred = predict_quantiles(quantile_models, cal_X)
+            q_hat = conformal_qhat(
+                cal_y.to_numpy(),
+                cal_pred["delta_p10"].to_numpy(),
+                cal_pred["delta_p90"].to_numpy(),
+                alpha=0.2,
+            )
+        else:
+            quantile_models = train_quantile_models(X_train, y_train_delta)
+            q_hat = 0.0
         delta_quantiles = predict_quantiles(quantile_models, X_test)
 
         if delta_clip is not None:
@@ -161,6 +178,7 @@ def walk_forward_by_quarter(
         y_pred_p10 = asof_close + delta_quantiles["delta_p10"].to_numpy()
         y_pred_p50 = asof_close + delta_quantiles["delta_p50"].to_numpy()
         y_pred_p90 = asof_close + delta_quantiles["delta_p90"].to_numpy()
+        y_pred_p10_cal, y_pred_p90_cal = apply_conformal(y_pred_p10, y_pred_p90, q_hat)
         y_pred_naive = asof_close
         y_pred_mom = asof_close * (1.0 + ret_20d)
 
@@ -189,6 +207,11 @@ def walk_forward_by_quarter(
         out["y_pred_p10"] = y_pred_p10
         out["y_pred_p50"] = y_pred_p50
         out["y_pred_p90"] = y_pred_p90
+        out["y_pred_p10_raw"] = y_pred_p10
+        out["y_pred_p90_raw"] = y_pred_p90
+        out["y_pred_p10_cal"] = y_pred_p10_cal
+        out["y_pred_p90_cal"] = y_pred_p90_cal
+        out["q_hat"] = q_hat
         if y_pred_hybrid_tree is not None:
             out["y_pred_hybrid_tree"] = y_pred_hybrid_tree
             out["use_model_tree"] = use_model_tree.astype(int)
@@ -213,6 +236,8 @@ def walk_forward_by_quarter(
     y_pred_p10 = preds["y_pred_p10"].to_numpy()
     y_pred_p50 = preds["y_pred_p50"].to_numpy()
     y_pred_p90 = preds["y_pred_p90"].to_numpy()
+    y_pred_p10_cal = preds["y_pred_p10_cal"].to_numpy()
+    y_pred_p90_cal = preds["y_pred_p90_cal"].to_numpy()
     y_pred_naive = preds["y_pred_naive"].to_numpy()
     y_pred_mom = preds["y_pred_mom"].to_numpy()
 
@@ -225,8 +250,10 @@ def walk_forward_by_quarter(
         "MAPE_ridge": _mape(y_true, y_pred_ridge),
         "MAE_p50": _mae(y_true, y_pred_p50),
         "MAPE_p50": _mape(y_true, y_pred_p50),
-        "coverage_80": float(np.mean((y_true >= y_pred_p10) & (y_true <= y_pred_p90))),
-        "avg_width_80": float(np.mean(y_pred_p90 - y_pred_p10)),
+        "coverage_80_raw": float(np.mean((y_true >= y_pred_p10) & (y_true <= y_pred_p90))),
+        "avg_width_80_raw": float(np.mean(y_pred_p90 - y_pred_p10)),
+        "coverage_80_cal": float(np.mean((y_true >= y_pred_p10_cal) & (y_true <= y_pred_p90_cal))),
+        "avg_width_80_cal": float(np.mean(y_pred_p90_cal - y_pred_p10_cal)),
         "pinball_p10": _pinball(y_true, y_pred_p10, 0.1),
         "pinball_p50": _pinball(y_true, y_pred_p50, 0.5),
         "pinball_p90": _pinball(y_true, y_pred_p90, 0.9),

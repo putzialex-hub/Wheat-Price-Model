@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from config import AppConfig
@@ -11,6 +12,7 @@ from data_loader import load_bl2c1_csv, load_bl2c2_csv
 import features
 from features import add_market_features, add_macro_return_features, latest_available_merge
 from dataset import build_quarter_end_dataset
+from calibration import apply_conformal, conformal_qhat
 from model import (
     TrainedModel,
     QuantileModels,
@@ -26,6 +28,8 @@ class PipelineArtifacts:
     prices: pd.DataFrame
     features_daily: pd.DataFrame
     dataset_meta: pd.DataFrame
+    dataset_X: pd.DataFrame
+    dataset_y: pd.Series
     quantile_models: QuantileModels | None
 
 
@@ -116,6 +120,8 @@ def run_training_pipeline(
         prices=prices,
         features_daily=feats,
         dataset_meta=ds.meta,
+        dataset_X=ds.X,
+        dataset_y=ds.y,
         quantile_models=quantile_models,
     )
 
@@ -153,18 +159,42 @@ def forecast_next_quarter_end(
     forecast = asof_close + float(delta_pred)
     if artifacts.quantile_models is None:
         return pd.DataFrame({"asof_date": [asof_date], "forecast_qend": [forecast]})
-    delta_q = predict_quantiles(artifacts.quantile_models, X_live).iloc[0]
-    p10 = asof_close + float(delta_q["delta_p10"])
+    y_all_delta = artifacts.dataset_y.to_numpy() - artifacts.dataset_X["asof_close"].astype(float).to_numpy()
+    calib_size = max(20, int(len(artifacts.dataset_X) * 0.2))
+    if len(artifacts.dataset_X) > calib_size:
+        fit_X = artifacts.dataset_X.iloc[:-calib_size]
+        cal_X = artifacts.dataset_X.iloc[-calib_size:]
+        fit_y = pd.Series(y_all_delta[:-calib_size], index=fit_X.index)
+        cal_y = pd.Series(y_all_delta[-calib_size:], index=cal_X.index)
+        quantile_models = train_quantile_models(fit_X, fit_y)
+        cal_pred = predict_quantiles(quantile_models, cal_X)
+        q_hat = conformal_qhat(
+            cal_y.to_numpy(),
+            cal_pred["delta_p10"].to_numpy(),
+            cal_pred["delta_p90"].to_numpy(),
+            alpha=0.2,
+        )
+    else:
+        quantile_models = artifacts.quantile_models
+        q_hat = 0.0
+    delta_q = predict_quantiles(quantile_models, X_live).iloc[0]
+    p10_raw = asof_close + float(delta_q["delta_p10"])
     p50 = asof_close + float(delta_q["delta_p50"])
-    p90 = asof_close + float(delta_q["delta_p90"])
-    risk_score = p90 - p10
+    p90_raw = asof_close + float(delta_q["delta_p90"])
+    p10_cal, p90_cal = apply_conformal(np.array([p10_raw]), np.array([p90_raw]), q_hat)
+    risk_score_raw = p90_raw - p10_raw
+    risk_score_cal = float(p90_cal[0] - p10_cal[0])
     return pd.DataFrame(
         {
             "asof_date": [asof_date],
             "forecast_qend": [forecast],
             "forecast_p50": [p50],
-            "p10": [p10],
-            "p90": [p90],
-            "risk_score": [risk_score],
+            "p10_raw": [p10_raw],
+            "p90_raw": [p90_raw],
+            "p10_cal": [float(p10_cal[0])],
+            "p90_cal": [float(p90_cal[0])],
+            "risk_score_raw": [risk_score_raw],
+            "risk_score_cal": [risk_score_cal],
+            "q_hat": [q_hat],
         }
     )
