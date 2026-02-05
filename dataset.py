@@ -29,12 +29,22 @@ def _fridays_between(dates: pd.DatetimeIndex, start: pd.Timestamp, end: pd.Times
     return list(dates[mask])
 
 
+<<<<<<< codex/refactor-pipeline-to-single-series-format-uapsbf
+def build_quarter_end_dataset(
+    features_daily: pd.DataFrame,
+    cont_daily: pd.DataFrame,
+    trading_days: pd.DatetimeIndex,
+    spec: ForecastSpec,
+    primary_only: bool = True,
+) -> DatasetOutput:
+=======
 def build_quarter_end_dataset(
     features_daily: pd.DataFrame,
     cont_daily: pd.DataFrame,
     trading_days: pd.DatetimeIndex,
     spec: ForecastSpec,
 ) -> DatasetOutput:
+>>>>>>> main
     """
     Build supervised dataset:
       X(as-of Friday) -> y(quarter-end settlement or close)
@@ -70,7 +80,7 @@ def build_quarter_end_dataset(
             continue
 
         # Optionally include multiple Fridays up to quarter-end for weekly updates
-        if spec.include_weekly_updates:
+        if spec.include_weekly_updates and not primary_only:
             start = qend - pd.Timedelta(days=7 * spec.max_weeks_before_qend)
             fridays = _fridays_between(trading_days, start, qend)
             # Keep only Fridays that are on/after primary as-of (so live pattern matches) and not too close to qend
@@ -89,6 +99,19 @@ def build_quarter_end_dataset(
         else:
             y_val = float(cont_daily.loc[qend, "close"])
 
+<<<<<<< codex/refactor-pipeline-to-single-series-format-uapsbf
+        for asof in asof_dates:
+            if asof not in features_daily.index:
+                continue
+            x = features_daily.loc[asof].copy()
+            weeks_to_qend = int(round((qend - asof).days / 7.0))
+            x["weeks_to_qend"] = weeks_to_qend
+            is_primary = asof == asof_primary
+
+            rows_X.append(x)
+            rows_y.append(y_val)
+            rows_meta.append((str(q), asof, qend, weeks_to_qend, is_primary))
+=======
         for asof in asof_dates:
             if asof not in features_daily.index:
                 continue
@@ -99,13 +122,17 @@ def build_quarter_end_dataset(
             rows_X.append(x)
             rows_y.append(y_val)
             rows_meta.append((str(q), asof, qend, weeks_to_qend))
+>>>>>>> main
 
     if not rows_X:
         raise ValueError("No dataset rows generated; check calendar/inputs")
 
     X = pd.DataFrame(rows_X)
     y = pd.Series(rows_y, name="target_qend_settlement")
-    meta = pd.DataFrame(rows_meta, columns=["quarter", "asof_date", "qend_date", "weeks_to_qend"])
+    meta = pd.DataFrame(
+        rows_meta,
+        columns=["quarter", "asof_date", "qend_date", "weeks_to_qend", "is_primary_asof"],
+    )
 
     # Basic cleanup: drop columns with all-missing
     X = X.dropna(axis=1, how="all")
