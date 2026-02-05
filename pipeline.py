@@ -51,11 +51,17 @@ def run_training_pipeline(
 
     macro = load_optional_table(cfg.data.macro_path)
     if macro is not None:
-        feats = latest_available_merge(feats, macro, asof_col="available_at")
+        if "available_at" not in macro.columns:
+            print("Warning: macro CSV missing 'available_at' column; skipping macro merge.")
+        else:
+            feats = latest_available_merge(feats, macro, asof_col="available_at")
 
     fundamentals = load_optional_table(cfg.data.fundamentals_path)
     if fundamentals is not None:
-        feats = latest_available_merge(feats, fundamentals, asof_col="available_at")
+        if "available_at" not in fundamentals.columns:
+            print("Warning: fundamentals CSV missing 'available_at' column; skipping merge.")
+        else:
+            feats = latest_available_merge(feats, fundamentals, asof_col="available_at")
 
     ds = build_quarter_end_dataset(
         features_daily=feats,
