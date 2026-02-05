@@ -60,6 +60,17 @@ def main() -> None:
         help="Comma-separated list of thresholds for grid search (e.g. '5,10,15').",
     )
     parser.add_argument(
+        "--ridge-alpha",
+        type=float,
+        default=10.0,
+        help="Ridge alpha (L2) regularization strength. Default: 10.0.",
+    )
+    parser.add_argument(
+        "--ridge-alpha-grid",
+        default=None,
+        help="Comma-separated grid for ridge alpha (e.g. '0.1,1,10,100').",
+    )
+    parser.add_argument(
         "--no-hybrid",
         action="store_true",
         help="Disable hybrid reporting (use pure model outputs).",
@@ -78,6 +89,9 @@ def main() -> None:
         macro_path = None
 
     cfg = AppConfig(data=DataPaths(contracts_path=csv_path, macro_path=macro_path))
+    cfg.model.ridge_alpha = args.ridge_alpha
+    if args.ridge_alpha_grid:
+        cfg.model.ridge_alpha_grid = [float(x.strip()) for x in args.ridge_alpha_grid.split(",") if x.strip()]
 
     prices = load_bl2c1_csv(csv_path)
     feats = add_market_features(prices)
@@ -214,6 +228,8 @@ def main() -> None:
     else:
         earliest["y_pred_hybrid_tree"] = np.nan
         earliest["abs_err_hybrid_tree"] = np.nan
+    if "y_pred_hybrid_ridge" in earliest.columns:
+        earliest["abs_err_hybrid_ridge"] = (earliest["y_true"] - earliest["y_pred_hybrid_ridge"]).abs()
     if "y_pred_hybrid_ridge" not in earliest.columns:
         earliest["y_pred_hybrid_ridge"] = np.nan
     earliest["abs_err_naive"] = (earliest["y_true"] - earliest["y_pred_naive"]).abs()
@@ -221,47 +237,55 @@ def main() -> None:
     worst = earliest.sort_values("abs_err_tree", ascending=False).head(10)
 
     print("\nWorst 10 quarters (tree abs error):")
-    print(
-        worst[
-            [
-                "quarter",
-                "asof_date",
-                "qend_date",
-                "asof_close",
-                "y_true",
-                "y_pred_tree",
-                "y_pred_ridge",
-                "y_pred_hybrid_tree",
-                "y_pred_naive",
-                "y_pred_mom",
-                "abs_err_tree",
-                "abs_err_ridge",
-                "abs_err_hybrid_tree",
-                "abs_err_naive",
-                "abs_err_mom",
-            ]
-        ].to_string(index=False)
-    )
+    worst_cols = [
+        "quarter",
+        "asof_date",
+        "qend_date",
+        "asof_close",
+        "y_true",
+        "y_pred_tree",
+        "y_pred_ridge",
+    ]
+    if "y_pred_hybrid_tree" in worst.columns and not worst["y_pred_hybrid_tree"].isna().all():
+        worst_cols.append("y_pred_hybrid_tree")
+        worst_cols.append("abs_err_hybrid_tree")
+    if "y_pred_hybrid_ridge" in worst.columns and not worst["y_pred_hybrid_ridge"].isna().all():
+        worst_cols.append("y_pred_hybrid_ridge")
+    worst_cols += [
+        "y_pred_naive",
+        "y_pred_mom",
+        "abs_err_tree",
+        "abs_err_ridge",
+        "abs_err_naive",
+        "abs_err_mom",
+    ]
+    print(worst[worst_cols].to_string(index=False))
 
     worst5_quarters = set(earliest.sort_values("abs_err_tree", ascending=False).head(5)["quarter"])
     full_mae = {
         "tree": earliest["abs_err_tree"].mean(),
         "ridge": earliest["abs_err_ridge"].mean(),
-        "hybrid_tree": earliest["abs_err_hybrid_tree"].mean(),
         "naive": earliest["abs_err_naive"].mean(),
         "mom": earliest["abs_err_mom"].mean(),
     }
+    if "abs_err_hybrid_tree" in earliest.columns and not earliest["abs_err_hybrid_tree"].isna().all():
+        full_mae["hybrid_tree"] = earliest["abs_err_hybrid_tree"].mean()
+    if "abs_err_hybrid_ridge" in earliest.columns and not earliest["abs_err_hybrid_ridge"].isna().all():
+        full_mae["hybrid_ridge"] = earliest["abs_err_hybrid_ridge"].mean()
     trimmed = earliest[~earliest["quarter"].isin(worst5_quarters)]
     trimmed_mae = {
         "tree": trimmed["abs_err_tree"].mean(),
         "ridge": trimmed["abs_err_ridge"].mean(),
-        "hybrid_tree": trimmed["abs_err_hybrid_tree"].mean(),
         "naive": trimmed["abs_err_naive"].mean(),
         "mom": trimmed["abs_err_mom"].mean(),
     }
+    if "abs_err_hybrid_tree" in trimmed.columns and not trimmed["abs_err_hybrid_tree"].isna().all():
+        trimmed_mae["hybrid_tree"] = trimmed["abs_err_hybrid_tree"].mean()
+    if "abs_err_hybrid_ridge" in trimmed.columns and not trimmed["abs_err_hybrid_ridge"].isna().all():
+        trimmed_mae["hybrid_ridge"] = trimmed["abs_err_hybrid_ridge"].mean()
 
     print("\nMAE (full vs excl worst 5 quarters by tree):")
-    for key in ["tree", "ridge", "hybrid_tree", "naive", "mom"]:
+    for key in full_mae:
         print(f"  {key}: {full_mae[key]:.4f} | {trimmed_mae[key]:.4f}")
 
     subset_2022 = preds[preds["qend_date"].dt.year == 2022]
@@ -284,30 +308,24 @@ def main() -> None:
 
     print("\nSanity sample (10 rows):")
     sample = preds.sort_values("asof_date").head(10)
-    if "y_pred_hybrid_ridge" not in sample.columns:
-        sample["y_pred_hybrid_ridge"] = np.nan
-    if "y_pred_hybrid_tree" not in sample.columns:
-        sample["y_pred_hybrid_tree"] = np.nan
+    sample_cols = [
+        "quarter",
+        "asof_date",
+        "qend_date",
+        "weeks_to_qend",
+        "asof_close",
+        "ret_20d",
+        "y_true",
+        "y_pred_tree",
+        "y_pred_ridge",
+    ]
+    if "y_pred_hybrid_tree" in sample.columns and not sample["y_pred_hybrid_tree"].isna().all():
+        sample_cols.append("y_pred_hybrid_tree")
+    if "y_pred_hybrid_ridge" in sample.columns and not sample["y_pred_hybrid_ridge"].isna().all():
+        sample_cols.append("y_pred_hybrid_ridge")
+    sample_cols += ["y_pred_naive", "y_pred_mom"]
     with pd.option_context("display.float_format", "{:.6f}".format):
-        print(
-            sample[
-                [
-                    "quarter",
-                    "asof_date",
-                    "qend_date",
-                    "weeks_to_qend",
-                    "asof_close",
-                    "ret_20d",
-                    "y_true",
-                    "y_pred_tree",
-                    "y_pred_ridge",
-                    "y_pred_hybrid_tree",
-                    "y_pred_hybrid_ridge",
-                    "y_pred_naive",
-                    "y_pred_mom",
-                ]
-            ].to_string(index=False)
-        )
+        print(sample[sample_cols].to_string(index=False))
 
     try:
         fc = forecast_next_quarter_end(model, artifacts, cfg)

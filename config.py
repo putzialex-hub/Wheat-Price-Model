@@ -62,6 +62,8 @@ class ModelSpec:
     n_estimators: int = 400
     learning_rate: float = 0.05
     max_depth: int = 3
+    ridge_alpha: float = 10.0
+    ridge_alpha_grid: Optional[list[float]] = None
 
 
 @dataclass(frozen=True)

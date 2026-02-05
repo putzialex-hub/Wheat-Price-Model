@@ -29,6 +29,55 @@ def _rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
 
 
+def select_features_for_model(X: pd.DataFrame, model_type: str) -> pd.DataFrame:
+    if model_type != "ridge":
+        return X
+    drop_cols = [c for c in ["close_c2", "settlement_c2", "close_c2__is_missing"] if c in X.columns]
+    return X.drop(columns=drop_cols)
+
+
+def _choose_ridge_alpha(
+    X: pd.DataFrame,
+    y: pd.Series,
+    meta: pd.DataFrame,
+    model_spec: ModelSpec,
+) -> float:
+    grid = model_spec.ridge_alpha_grid
+    if not grid:
+        return model_spec.ridge_alpha
+    df = meta.copy()
+    df["row_id"] = np.arange(len(df))
+    df = df.sort_values(["qend_date", "asof_date"]).reset_index(drop=True)
+    unique_qends = sorted(df["qend_date"].unique())
+    split_idx = max(1, int(len(unique_qends) * 0.7))
+    train_qends = unique_qends[:split_idx]
+    val_qends = unique_qends[split_idx:]
+    if not val_qends:
+        return model_spec.ridge_alpha
+
+    train_idx = df[df["qend_date"].isin(train_qends)]["row_id"].values
+    val_idx = df[df["qend_date"].isin(val_qends)]["row_id"].values
+    X_train = select_features_for_model(X.iloc[train_idx], "ridge")
+    X_val = select_features_for_model(X.iloc[val_idx], "ridge")
+    y_train = y.iloc[train_idx]
+    y_val = y.iloc[val_idx]
+
+    y_train_delta = y_train.to_numpy() - X_train["asof_close"].astype(float).to_numpy()
+    y_train_delta = pd.Series(y_train_delta, index=y_train.index)
+    asof_close_val = X_val["asof_close"].astype(float).to_numpy()
+    best_alpha = model_spec.ridge_alpha
+    best_mae = float("inf")
+    for alpha in grid:
+        ridge_model = train_model(X_train, y_train_delta, model_spec, model_type="ridge", ridge_alpha=alpha)
+        delta_pred = predict(ridge_model, X_val)
+        y_pred = asof_close_val + delta_pred
+        mae = _mae(y_val.to_numpy(), y_pred)
+        if mae < best_mae:
+            best_mae = mae
+            best_alpha = alpha
+    return best_alpha
+
+
 def walk_forward_by_quarter(
     X: pd.DataFrame,
     y: pd.Series,
@@ -55,6 +104,7 @@ def walk_forward_by_quarter(
 
     unique_qends = sorted(df["qend_date"].unique())
     preds_rows: List[pd.DataFrame] = []
+    ridge_alpha = _choose_ridge_alpha(X, y, meta, model_spec)
 
     for i, qend in enumerate(unique_qends):
         train_qends = unique_qends[:i]
@@ -66,6 +116,8 @@ def walk_forward_by_quarter(
 
         X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
         X_test, y_test = X.iloc[test_idx], y.iloc[test_idx]
+        X_train_ridge = select_features_for_model(X_train, "ridge")
+        X_test_ridge = select_features_for_model(X_test, "ridge")
 
         if "asof_close" not in X_test.columns or "ret_20d" not in X_test.columns:
             raise ValueError("Features must include asof_close and ret_20d for baselines.")
@@ -79,8 +131,16 @@ def walk_forward_by_quarter(
         tree_model = train_model(X_train, y_train_delta, model_spec, model_type="tree")
         delta_pred_tree = predict(tree_model, X_test)
 
-        ridge_model = train_model(X_train, y_train_delta, model_spec, model_type="ridge")
-        delta_pred_ridge = predict(ridge_model, X_test)
+        y_train_delta_ridge = y_train.to_numpy() - X_train_ridge["asof_close"].astype(float).to_numpy()
+        y_train_delta_ridge = pd.Series(y_train_delta_ridge, index=y_train.index)
+        ridge_model = train_model(
+            X_train_ridge,
+            y_train_delta_ridge,
+            model_spec,
+            model_type="ridge",
+            ridge_alpha=ridge_alpha,
+        )
+        delta_pred_ridge = predict(ridge_model, X_test_ridge)
 
         if delta_clip is not None:
             delta_pred_tree = np.clip(delta_pred_tree, -delta_clip, delta_clip)

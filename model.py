@@ -9,7 +9,7 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import Ridge
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from config import ModelSpec
 
@@ -25,6 +25,7 @@ def train_model(
     y: pd.Series,
     spec: ModelSpec,
     model_type: str = "tree",
+    ridge_alpha: float | None = None,
 ) -> TrainedModel:
     """
     Production-friendly default:
@@ -37,19 +38,50 @@ def train_model(
     cat_cols = [c for c in Xc.columns if Xc[c].dtype == "object"]
     num_cols = [c for c in Xc.columns if c not in cat_cols]
 
-    pre = ColumnTransformer(
-        transformers=[
-            ("num", SimpleImputer(strategy="median"), num_cols),
-            ("cat", Pipeline(steps=[
-                ("imputer", SimpleImputer(strategy="most_frequent")),
-                ("onehot", OneHotEncoder(handle_unknown="ignore")),
-            ]), cat_cols),
-        ],
-        remainder="drop",
-    )
+    if model_type == "ridge":
+        num_pipe = Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler", StandardScaler()),
+            ]
+        )
+        pre = ColumnTransformer(
+            transformers=[
+                ("num", num_pipe, num_cols),
+                (
+                    "cat",
+                    Pipeline(
+                        steps=[
+                            ("imputer", SimpleImputer(strategy="most_frequent")),
+                            ("onehot", OneHotEncoder(handle_unknown="ignore")),
+                        ]
+                    ),
+                    cat_cols,
+                ),
+            ],
+            remainder="drop",
+        )
+    else:
+        pre = ColumnTransformer(
+            transformers=[
+                ("num", SimpleImputer(strategy="median"), num_cols),
+                (
+                    "cat",
+                    Pipeline(
+                        steps=[
+                            ("imputer", SimpleImputer(strategy="most_frequent")),
+                            ("onehot", OneHotEncoder(handle_unknown="ignore")),
+                        ]
+                    ),
+                    cat_cols,
+                ),
+            ],
+            remainder="drop",
+        )
 
     if model_type == "ridge":
-        model = Ridge(alpha=1.0, random_state=spec.random_state)
+        alpha = ridge_alpha if ridge_alpha is not None else spec.ridge_alpha
+        model = Ridge(alpha=alpha, random_state=spec.random_state)
     else:
         model = HistGradientBoostingRegressor(
             max_depth=spec.max_depth,
