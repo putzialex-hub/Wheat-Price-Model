@@ -35,6 +35,7 @@ def add_macro_return_features(features: pd.DataFrame) -> pd.DataFrame:
     if "brent" in df.columns:
         df["brent_ret_20d"] = df["brent"].pct_change(20)
         df["brent_vol_20d"] = df["brent_ret_20d"].rolling(20).std()
+    df = df.replace([np.inf, -np.inf], np.nan)
     return df
 
 
@@ -52,6 +53,7 @@ def add_term_structure_features(features: pd.DataFrame) -> pd.DataFrame:
     roll_mean = spread.rolling(60).mean()
     roll_std = spread.rolling(60).std()
     df["spread_z_60d"] = (spread - roll_mean) / roll_std
+    df = df.replace([np.inf, -np.inf], np.nan)
     return df
 
 
