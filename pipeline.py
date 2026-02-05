@@ -26,7 +26,7 @@ def load_optional_table(path: Optional[Path]) -> Optional[pd.DataFrame]:
         return None
     if not path.exists():
         return None
-    return pd.read_csv(path)
+    return pd.read_csv(path, sep=None, engine="python")
 
 
 def run_training_pipeline(
