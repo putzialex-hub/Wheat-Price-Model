@@ -25,6 +25,19 @@ def add_market_features(prices: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_macro_return_features(features: pd.DataFrame) -> pd.DataFrame:
+    df = features.copy()
+    for col in ["eurusd", "brent"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "eurusd" in df.columns:
+        df["eurusd_ret_20d"] = df["eurusd"].pct_change(20)
+    if "brent" in df.columns:
+        df["brent_ret_20d"] = df["brent"].pct_change(20)
+        df["brent_vol_20d"] = df["brent_ret_20d"].rolling(20).std()
+    return df
+
+
 def latest_available_merge(
     base: pd.DataFrame,
     feature_table: pd.DataFrame,

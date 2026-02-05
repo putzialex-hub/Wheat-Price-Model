@@ -8,7 +8,7 @@ import pandas as pd
 
 from config import AppConfig
 from data_loader import load_bl2c1_csv
-from features import add_market_features, latest_available_merge
+from features import add_market_features, add_macro_return_features, latest_available_merge
 from dataset import build_quarter_end_dataset
 from model import train_model, TrainedModel
 from backtest import BacktestResult, walk_forward_by_quarter
@@ -37,6 +37,7 @@ def run_training_pipeline(
     primary_only: bool = True,
     hybrid_threshold: float = 10.0,
     enable_hybrid: bool = True,
+    hybrid_model: str = "ridge",
 ) -> tuple[TrainedModel, PipelineArtifacts, BacktestResult]:
     """
     End-to-end:
@@ -65,6 +66,8 @@ def run_training_pipeline(
         else:
             feats = latest_available_merge(feats, fundamentals, asof_col="available_at")
 
+    feats = add_macro_return_features(feats)
+
     ds = build_quarter_end_dataset(
         features_daily=feats,
         cont_daily=prices,
@@ -81,6 +84,7 @@ def run_training_pipeline(
         cfg.model,
         hybrid_threshold=hybrid_threshold,
         enable_hybrid=enable_hybrid,
+        hybrid_model=hybrid_model,
     )
 
     # Train final model on full dataset (delta target)

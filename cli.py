@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from config import AppConfig, DataPaths
@@ -43,6 +44,17 @@ def main() -> None:
         help="Hybrid threshold in EUR/t for switching to model prediction.",
     )
     parser.add_argument(
+        "--hybrid-model",
+        choices=["ridge", "tree", "both"],
+        default="ridge",
+        help="Which model drives hybrid selection. Default: ridge.",
+    )
+    parser.add_argument(
+        "--grid-thresholds",
+        default=None,
+        help="Comma-separated list of thresholds for grid search (e.g. '5,10,15').",
+    )
+    parser.add_argument(
         "--no-hybrid",
         action="store_true",
         help="Disable hybrid reporting (use pure model outputs).",
@@ -72,12 +84,70 @@ def main() -> None:
     if ret_20d.nunique(dropna=True) <= 2:
         raise ValueError("ret_20d appears constant; check parsing/feature computation")
 
+    if args.grid_thresholds:
+        thresholds = [float(x.strip()) for x in args.grid_thresholds.split(",") if x.strip()]
+        rows = []
+        for threshold in thresholds:
+            _, _, bt = run_training_pipeline(
+                cfg,
+                str(csv_path),
+                primary_only=args.primary_only,
+                hybrid_threshold=threshold,
+                enable_hybrid=True,
+                hybrid_model=args.hybrid_model,
+            )
+            preds = bt.predictions
+            y_true = preds["y_true"].to_numpy()
+            y_pred_naive = preds["y_pred_naive"].to_numpy()
+            rows.append(
+                {
+                    "threshold": threshold,
+                    "model": "naive",
+                    "MAE": (abs(y_true - y_pred_naive)).mean(),
+                    "MAPE": (abs(y_true - y_pred_naive) / preds["y_true"].abs().clip(lower=1e-9)).mean()
+                    * 100.0,
+                    "usage_rate": np.nan,
+                }
+            )
+            if "y_pred_hybrid_ridge" in preds.columns:
+                y_pred = preds["y_pred_hybrid_ridge"].to_numpy()
+                rows.append(
+                    {
+                        "threshold": threshold,
+                        "model": "hybrid_ridge",
+                        "MAE": (abs(y_true - y_pred)).mean(),
+                        "MAPE": (abs(y_true - y_pred) / preds["y_true"].abs().clip(lower=1e-9)).mean()
+                        * 100.0,
+                        "usage_rate": preds["use_model_ridge"].mean(),
+                    }
+                )
+            if "y_pred_hybrid_tree" in preds.columns:
+                y_pred = preds["y_pred_hybrid_tree"].to_numpy()
+                rows.append(
+                    {
+                        "threshold": threshold,
+                        "model": "hybrid_tree",
+                        "MAE": (abs(y_true - y_pred)).mean(),
+                        "MAPE": (abs(y_true - y_pred) / preds["y_true"].abs().clip(lower=1e-9)).mean()
+                        * 100.0,
+                        "usage_rate": preds["use_model_tree"].mean(),
+                    }
+                )
+        grid = pd.DataFrame(rows).sort_values("MAE").reset_index(drop=True)
+        print("\nHybrid threshold grid (sorted by MAE):")
+        print(grid.to_string(index=False, float_format="{:.4f}".format))
+        print("\nBest threshold per model:")
+        best = grid.sort_values("MAE").groupby("model", as_index=False).first()
+        print(best.to_string(index=False, float_format="{:.4f}".format))
+        return
+
     model, artifacts, bt = run_training_pipeline(
         cfg,
         str(csv_path),
         primary_only=args.primary_only,
         hybrid_threshold=args.hybrid_threshold,
         enable_hybrid=not args.no_hybrid,
+        hybrid_model=args.hybrid_model,
     )
 
     print("Backtest metrics:")
@@ -94,15 +164,25 @@ def main() -> None:
         preds["ret_20d"] = 0.0
     delta_pred = preds["y_pred_tree"] - preds["asof_close"]
     print(f"delta_pred stats: mean={delta_pred.mean():.6f}, std={delta_pred.std():.6f}")
-    print(
-        "Hybrid usage rate:",
-        f"tree={preds['use_model_tree'].mean():.3f}",
-        f"ridge={preds['use_model_ridge'].mean():.3f}",
-    )
+    usage_tree = preds["use_model_tree"].mean() if "use_model_tree" in preds.columns else None
+    usage_ridge = preds["use_model_ridge"].mean() if "use_model_ridge" in preds.columns else None
+    usage_parts = []
+    if usage_tree is not None:
+        usage_parts.append(f"tree={usage_tree:.3f}")
+    if usage_ridge is not None:
+        usage_parts.append(f"ridge={usage_ridge:.3f}")
+    if usage_parts:
+        print("Hybrid usage rate:", " ".join(usage_parts))
     earliest = preds.sort_values("asof_date").groupby("quarter", as_index=False).first()
     earliest["abs_err_tree"] = (earliest["y_true"] - earliest["y_pred_tree"]).abs()
     earliest["abs_err_ridge"] = (earliest["y_true"] - earliest["y_pred_ridge"]).abs()
-    earliest["abs_err_hybrid_tree"] = (earliest["y_true"] - earliest["y_pred_hybrid_tree"]).abs()
+    if "y_pred_hybrid_tree" in earliest.columns:
+        earliest["abs_err_hybrid_tree"] = (earliest["y_true"] - earliest["y_pred_hybrid_tree"]).abs()
+    else:
+        earliest["y_pred_hybrid_tree"] = np.nan
+        earliest["abs_err_hybrid_tree"] = np.nan
+    if "y_pred_hybrid_ridge" not in earliest.columns:
+        earliest["y_pred_hybrid_ridge"] = np.nan
     earliest["abs_err_naive"] = (earliest["y_true"] - earliest["y_pred_naive"]).abs()
     earliest["abs_err_mom"] = (earliest["y_true"] - earliest["y_pred_mom"]).abs()
     worst = earliest.sort_values("abs_err_tree", ascending=False).head(10)
@@ -154,13 +234,16 @@ def main() -> None:
     subset_2022 = preds[preds["qend_date"].dt.year == 2022]
     if not subset_2022.empty:
         print("\n2022 subset (MAE/MAPE):")
-        for key, col in [
+        candidates = [
             ("naive", "y_pred_naive"),
             ("ridge", "y_pred_ridge"),
             ("tree", "y_pred_tree"),
             ("hybrid_ridge", "y_pred_hybrid_ridge"),
             ("hybrid_tree", "y_pred_hybrid_tree"),
-        ]:
+        ]
+        for key, col in candidates:
+            if col not in subset_2022.columns:
+                continue
             mae = (subset_2022["y_true"] - subset_2022[col]).abs().mean()
             denom = subset_2022["y_true"].abs().clip(lower=1e-9)
             mape = ((subset_2022["y_true"] - subset_2022[col]).abs() / denom).mean() * 100.0
@@ -168,6 +251,10 @@ def main() -> None:
 
     print("\nSanity sample (10 rows):")
     sample = preds.sort_values("asof_date").head(10)
+    if "y_pred_hybrid_ridge" not in sample.columns:
+        sample["y_pred_hybrid_ridge"] = np.nan
+    if "y_pred_hybrid_tree" not in sample.columns:
+        sample["y_pred_hybrid_tree"] = np.nan
     with pd.option_context("display.float_format", "{:.6f}".format):
         print(
             sample[
