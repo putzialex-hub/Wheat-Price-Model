@@ -6,11 +6,12 @@ import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.linear_model import Ridge
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
-from .config import ModelSpec
+from config import ModelSpec
 
 
 @dataclass
@@ -19,7 +20,12 @@ class TrainedModel:
     feature_names_: list[str]
 
 
-def train_model(X: pd.DataFrame, y: pd.Series, spec: ModelSpec) -> TrainedModel:
+def train_model(
+    X: pd.DataFrame,
+    y: pd.Series,
+    spec: ModelSpec,
+    model_type: str = "tree",
+) -> TrainedModel:
     """
     Production-friendly default:
     - imputes missing values
@@ -42,12 +48,15 @@ def train_model(X: pd.DataFrame, y: pd.Series, spec: ModelSpec) -> TrainedModel:
         remainder="drop",
     )
 
-    model = HistGradientBoostingRegressor(
-        max_depth=spec.max_depth,
-        learning_rate=spec.learning_rate,
-        max_iter=spec.n_estimators,
-        random_state=spec.random_state,
-    )
+    if model_type == "ridge":
+        model = Ridge(alpha=1.0, random_state=spec.random_state)
+    else:
+        model = HistGradientBoostingRegressor(
+            max_depth=spec.max_depth,
+            learning_rate=spec.learning_rate,
+            max_iter=spec.n_estimators,
+            random_state=spec.random_state,
+        )
 
     pipe = Pipeline(steps=[("pre", pre), ("model", model)])
     pipe.fit(Xc, y)
