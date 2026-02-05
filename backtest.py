@@ -40,6 +40,9 @@ def walk_forward_by_quarter(
     enable_hybrid: bool = True,
     hybrid_model: str = "ridge",
 ) -> BacktestResult:
+    delta_clip: float | None = 80.0,
+) -> BacktestResult:
+ main
     """
     Walk-forward:
       train on all rows with qend_date < current qend_date
@@ -126,6 +129,34 @@ def walk_forward_by_quarter(
         if "weeks_to_qend" in X_test.columns:
             out["weeks_to_qend"] = X_test["weeks_to_qend"].to_numpy()
         preds_rows.append(out)
+        y_train_delta = pd.Series(y_train_delta, index=y_train.index)
+
+        tree_model = train_model(X_train, y_train_delta, model_spec, model_type="tree")
+        delta_pred_tree = predict(tree_model, X_test)
+
+        ridge_model = train_model(X_train, y_train_delta, model_spec, model_type="ridge")
+        delta_pred_ridge = predict(ridge_model, X_test)
+
+        if delta_clip is not None:
+            delta_pred_tree = np.clip(delta_pred_tree, -delta_clip, delta_clip)
+            delta_pred_ridge = np.clip(delta_pred_ridge, -delta_clip, delta_clip)
+
+        y_pred_tree = asof_close + delta_pred_tree
+        y_pred_ridge = asof_close + delta_pred_ridge
+        y_pred_naive = asof_close
+        y_pred_mom = asof_close * (1.0 + ret_20d)
+
+        out = df[df["row_id"].isin(test_idx)].copy()
+        out["y_pred_tree"] = y_pred_tree
+        out["y_pred_ridge"] = y_pred_ridge
+        out["y_pred_naive"] = y_pred_naive
+        out["y_pred_mom"] = y_pred_mom
+        out["asof_close"] = asof_close
+        out["ret_20d"] = ret_20d
+        if "weeks_to_qend" in X_test.columns:
+            out["weeks_to_qend"] = X_test["weeks_to_qend"].to_numpy()
+        preds_rows.append(out)
+ main
 
     if not preds_rows:
         raise ValueError("Backtest produced no predictions; check min_train_quarters or data length")
@@ -171,3 +202,25 @@ def walk_forward_by_quarter(
         )
 
     return BacktestResult(predictions=preds, metrics=metrics)
+    y_pred_tree = preds["y_pred_tree"].to_numpy()
+    y_pred_ridge = preds["y_pred_ridge"].to_numpy()
+    y_pred_naive = preds["y_pred_naive"].to_numpy()
+    y_pred_mom = preds["y_pred_mom"].to_numpy()
+
+    metrics = {
+        "MAE_tree": _mae(y_true, y_pred_tree),
+        "RMSE_tree": _rmse(y_true, y_pred_tree),
+        "MAPE_tree": _mape(y_true, y_pred_tree),
+        "MAE_ridge": _mae(y_true, y_pred_ridge),
+        "RMSE_ridge": _rmse(y_true, y_pred_ridge),
+        "MAPE_ridge": _mape(y_true, y_pred_ridge),
+        "MAE_naive": _mae(y_true, y_pred_naive),
+        "RMSE_naive": _rmse(y_true, y_pred_naive),
+        "MAPE_naive": _mape(y_true, y_pred_naive),
+        "MAE_mom": _mae(y_true, y_pred_mom),
+        "RMSE_mom": _rmse(y_true, y_pred_mom),
+        "MAPE_mom": _mape(y_true, y_pred_mom),
+    }
+
+    return BacktestResult(predictions=preds, metrics=metrics)
+ main

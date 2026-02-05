@@ -36,6 +36,62 @@ def add_macro_return_features(features: pd.DataFrame) -> pd.DataFrame:
         df["brent_ret_20d"] = df["brent"].pct_change(20)
         df["brent_vol_20d"] = df["brent_ret_20d"].rolling(20).std()
     return df
+def add_market_features(prices: pd.DataFrame) -> pd.DataFrame:
+    """
+    prices index=date; requires close (or settlement).
+    Creates weekly-style features (can be sampled later on Fridays).
+    """
+    df = prices.copy()
+
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    px = df["close"]
+    df["asof_close"] = px
+    df["ret_1d"] = px.pct_change()
+    df["ret_5d"] = px.pct_change(5)
+    df["ret_20d"] = px.pct_change(20)
+    df["ret_60d"] = px.pct_change(60)
+
+    df["vol_20d"] = df["ret_1d"].rolling(20).std()
+    df["mom_20d"] = px / px.shift(20) - 1.0
+
+    return df
+def add_market_features(prices: pd.DataFrame) -> pd.DataFrame:
+    """
+    prices index=date; requires close (or settlement).
+    Creates weekly-style features (can be sampled later on Fridays).
+    """
+    df = prices.copy()
+
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    px = df["close"]
+    df["asof_close"] = px
+    df["ret_1d"] = px.pct_change()
+    df["ret_5d"] = px.pct_change(5)
+    df["ret_20d"] = px.pct_change(20)
+    df["ret_60d"] = px.pct_change(60)
+
+    df["vol_20d"] = df["ret_1d"].rolling(20).std()
+    df["mom_20d"] = px / px.shift(20) - 1.0
+
+    return df
+def add_market_features(prices: pd.DataFrame) -> pd.DataFrame:
+    """
+    prices index=date; requires close (or settlement).
+    Creates weekly-style features (can be sampled later on Fridays).
+    """
+    df = prices.copy()
+
+    px = df["close"]
+    df["asof_close"] = px
+    df["ret_1d"] = px.pct_change()
+    df["ret_5d"] = px.pct_change(5)
+    df["ret_20d"] = px.pct_change(20)
+
+    df["vol_20d"] = df["ret_1d"].rolling(20).std()
+    df["mom_20d"] = px / px.shift(20) - 1.0
+
+    return df
+main
 
 
 def latest_available_merge(
