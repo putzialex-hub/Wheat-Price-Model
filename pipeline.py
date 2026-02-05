@@ -2,70 +2,47 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 import pandas as pd
 
-from .config import AppConfig
-from .continuous import build_backadjusted_continuous
-from .features import add_market_features, latest_available_merge
-from .dataset import build_quarter_end_dataset
-from .model import train_model, TrainedModel
-from .backtest import walk_forward_by_quarter
+from config import AppConfig
+from data_loader import load_bl2c1_csv
+from features import add_market_features, latest_available_merge
+from dataset import build_quarter_end_dataset
+from model import train_model, TrainedModel
+from backtest import BacktestResult, walk_forward_by_quarter
 
 
 @dataclass(frozen=True)
 class PipelineArtifacts:
-    continuous: pd.DataFrame
-    roll_events: pd.DataFrame
+    prices: pd.DataFrame
     features_daily: pd.DataFrame
-
-
-def load_contracts_table(path: Path) -> pd.DataFrame:
-    """
-    Load contract-level table.
-    Supports CSV and Parquet.
-    """
-    if path.suffix.lower() in {".parquet"}:
-        return pd.read_parquet(path)
-    return pd.read_csv(path)
+    dataset_meta: pd.DataFrame
 
 
 def load_optional_table(path: Optional[Path]) -> Optional[pd.DataFrame]:
     if path is None:
         return None
-    if path.suffix.lower() in {".parquet"}:
-        return pd.read_parquet(path)
     return pd.read_csv(path)
 
 
 def run_training_pipeline(
     cfg: AppConfig,
-    expiry_calendar: Dict[str, pd.Timestamp],
-) -> tuple[TrainedModel, PipelineArtifacts, dict]:
+    price_csv_path: str,
+) -> tuple[TrainedModel, PipelineArtifacts, BacktestResult]:
     """
     End-to-end:
       - load data
-      - build continuous
       - build features (market + optional lag-safe macro/fundamentals)
       - build supervised dataset
       - train final model on all rows
       - run walk-forward backtest for diagnostics
     """
-    contracts = load_contracts_table(cfg.data.contracts_path)
+    prices = load_bl2c1_csv(price_csv_path)
 
-    # Derive trading days from available dates in contracts
-    trading_days = pd.DatetimeIndex(pd.to_datetime(contracts["date"]).dt.normalize().unique()).sort_values()
-
-    cont_out = build_backadjusted_continuous(
-        contracts=contracts,
-        trading_days=trading_days,
-        expiry_calendar=expiry_calendar,
-        roll_rule=cfg.roll,
-    )
-
-    cont = cont_out.continuous
-    feats = add_market_features(cont)
+    trading_days = pd.DatetimeIndex(prices.index).sort_values()
+    feats = add_market_features(prices)
 
     macro = load_optional_table(cfg.data.macro_path)
     if macro is not None:
@@ -77,7 +54,7 @@ def run_training_pipeline(
 
     ds = build_quarter_end_dataset(
         features_daily=feats,
-        cont_daily=cont,
+        cont_daily=prices,
         trading_days=trading_days,
         spec=cfg.forecast,
     )
@@ -89,12 +66,12 @@ def run_training_pipeline(
     model = train_model(ds.X, ds.y, cfg.model)
 
     artifacts = PipelineArtifacts(
-        continuous=cont,
-        roll_events=cont_out.roll_events,
+        prices=prices,
         features_daily=feats,
+        dataset_meta=ds.meta,
     )
 
-    return model, artifacts, bt.metrics
+    return model, artifacts, bt
 
 
 def forecast_next_quarter_end(
@@ -108,15 +85,20 @@ def forecast_next_quarter_end(
     """
     feats = artifacts.features_daily.copy()
     last_date = feats.index.max()
-
-    # Only run on Fridays for the weekly update job
-    if last_date.weekday() != 4:
-        raise ValueError(f"Latest date {last_date.date()} is not a Friday; weekly job should run after Friday close.")
+    friday_dates = feats.index[feats.index.weekday == 4]
+    if friday_dates.empty:
+        raise ValueError("No Friday dates available in features; cannot compute live forecast.")
+    asof_date = friday_dates[friday_dates <= last_date].max()
+    if (last_date - asof_date).days > 7:
+        print(
+            "Warning: latest date is more than 7 days after the last available Friday "
+            f"({asof_date.date()})."
+        )
 
     # Minimal input row
-    X_live = feats.loc[[last_date]].copy()
+    X_live = feats.loc[[asof_date]].copy()
     # weeks_to_qend is unknown here without computing quarter-end; for live, keep 0 or compute externally
     X_live["weeks_to_qend"] = 0
 
     y_pred = model.pipeline.predict(X_live)[0]
-    return pd.DataFrame({"asof_date": [last_date], "forecast_qend": [float(y_pred)]})
+    return pd.DataFrame({"asof_date": [asof_date], "forecast_qend": [float(y_pred)]})

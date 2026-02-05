@@ -6,13 +6,13 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 
-from .calendar_utils import (
+from calendar_utils import (
     last_trading_day_of_quarter,
     nth_trading_day_before,
     previous_friday,
     quarters_from_dates,
 )
-from .config import ForecastSpec
+from config import ForecastSpec
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ def build_quarter_end_dataset(
       X(as-of Friday) -> y(quarter-end settlement or close)
 
     features_daily: daily features (index=date)
-    cont_daily: continuous series (index=date) with settlement_badj/close_badj
+    cont_daily: price series (index=date) with settlement/close
     """
     dates = features_daily.index.intersection(trading_days).sort_values()
     if len(dates) == 0:
@@ -84,10 +84,10 @@ def build_quarter_end_dataset(
             asof_dates = [asof_primary]
 
         # Determine target value at qend
-        if spec.prefer_settlement_target and pd.notna(cont_daily.loc[qend, "settlement_badj"]):
-            y_val = float(cont_daily.loc[qend, "settlement_badj"])
+        if spec.prefer_settlement_target and pd.notna(cont_daily.loc[qend, "settlement"]):
+            y_val = float(cont_daily.loc[qend, "settlement"])
         else:
-            y_val = float(cont_daily.loc[qend, "close_badj"])
+            y_val = float(cont_daily.loc[qend, "close"])
 
         for asof in asof_dates:
             if asof not in features_daily.index:
