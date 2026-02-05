@@ -35,7 +35,10 @@ def walk_forward_by_quarter(
     meta: pd.DataFrame,
     model_spec: ModelSpec,
     min_train_quarters: int = 12,
+<<<<<<< codex/refactor-pipeline-to-single-series-format-uapsbf
     delta_clip: float | None = 80.0,
+=======
+>>>>>>> main
 ) -> BacktestResult:
     """
     Walk-forward:
@@ -68,6 +71,7 @@ def walk_forward_by_quarter(
         ret_20d = X_test["ret_20d"].fillna(0.0).astype(float).to_numpy()
 
         y_train_delta = y_train.to_numpy() - X_train["asof_close"].astype(float).to_numpy()
+<<<<<<< codex/refactor-pipeline-to-single-series-format-uapsbf
         y_train_delta = pd.Series(y_train_delta, index=y_train.index)
 
         tree_model = train_model(X_train, y_train_delta, model_spec, model_type="tree")
@@ -82,12 +86,21 @@ def walk_forward_by_quarter(
 
         y_pred_tree = asof_close + delta_pred_tree
         y_pred_ridge = asof_close + delta_pred_ridge
+=======
+        m = train_model(X_train, pd.Series(y_train_delta, index=y_train.index), model_spec)
+        delta_pred = predict(m, X_test)
+        y_pred_model = asof_close + delta_pred
+>>>>>>> main
         y_pred_naive = asof_close
         y_pred_mom = asof_close * (1.0 + ret_20d)
 
         out = df[df["row_id"].isin(test_idx)].copy()
+<<<<<<< codex/refactor-pipeline-to-single-series-format-uapsbf
         out["y_pred_tree"] = y_pred_tree
         out["y_pred_ridge"] = y_pred_ridge
+=======
+        out["y_pred_model"] = y_pred_model
+>>>>>>> main
         out["y_pred_naive"] = y_pred_naive
         out["y_pred_mom"] = y_pred_mom
         out["asof_close"] = asof_close
@@ -101,18 +114,28 @@ def walk_forward_by_quarter(
 
     preds = pd.concat(preds_rows, ignore_index=True)
     y_true = preds["y_true"].to_numpy()
+<<<<<<< codex/refactor-pipeline-to-single-series-format-uapsbf
     y_pred_tree = preds["y_pred_tree"].to_numpy()
     y_pred_ridge = preds["y_pred_ridge"].to_numpy()
+=======
+    y_pred_model = preds["y_pred_model"].to_numpy()
+>>>>>>> main
     y_pred_naive = preds["y_pred_naive"].to_numpy()
     y_pred_mom = preds["y_pred_mom"].to_numpy()
 
     metrics = {
+<<<<<<< codex/refactor-pipeline-to-single-series-format-uapsbf
         "MAE_tree": _mae(y_true, y_pred_tree),
         "RMSE_tree": _rmse(y_true, y_pred_tree),
         "MAPE_tree": _mape(y_true, y_pred_tree),
         "MAE_ridge": _mae(y_true, y_pred_ridge),
         "RMSE_ridge": _rmse(y_true, y_pred_ridge),
         "MAPE_ridge": _mape(y_true, y_pred_ridge),
+=======
+        "MAE_model": _mae(y_true, y_pred_model),
+        "RMSE_model": _rmse(y_true, y_pred_model),
+        "MAPE_model": _mape(y_true, y_pred_model),
+>>>>>>> main
         "MAE_naive": _mae(y_true, y_pred_naive),
         "RMSE_naive": _rmse(y_true, y_pred_naive),
         "MAPE_naive": _mape(y_true, y_pred_naive),

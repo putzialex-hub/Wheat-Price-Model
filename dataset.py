@@ -29,6 +29,7 @@ def _fridays_between(dates: pd.DatetimeIndex, start: pd.Timestamp, end: pd.Times
     return list(dates[mask])
 
 
+<<<<<<< codex/refactor-pipeline-to-single-series-format-uapsbf
 def build_quarter_end_dataset(
     features_daily: pd.DataFrame,
     cont_daily: pd.DataFrame,
@@ -36,6 +37,14 @@ def build_quarter_end_dataset(
     spec: ForecastSpec,
     primary_only: bool = True,
 ) -> DatasetOutput:
+=======
+def build_quarter_end_dataset(
+    features_daily: pd.DataFrame,
+    cont_daily: pd.DataFrame,
+    trading_days: pd.DatetimeIndex,
+    spec: ForecastSpec,
+) -> DatasetOutput:
+>>>>>>> main
     """
     Build supervised dataset:
       X(as-of Friday) -> y(quarter-end settlement or close)
@@ -90,6 +99,7 @@ def build_quarter_end_dataset(
         else:
             y_val = float(cont_daily.loc[qend, "close"])
 
+<<<<<<< codex/refactor-pipeline-to-single-series-format-uapsbf
         for asof in asof_dates:
             if asof not in features_daily.index:
                 continue
@@ -101,6 +111,18 @@ def build_quarter_end_dataset(
             rows_X.append(x)
             rows_y.append(y_val)
             rows_meta.append((str(q), asof, qend, weeks_to_qend, is_primary))
+=======
+        for asof in asof_dates:
+            if asof not in features_daily.index:
+                continue
+            x = features_daily.loc[asof].copy()
+            weeks_to_qend = int(round((qend - asof).days / 7.0))
+            x["weeks_to_qend"] = weeks_to_qend
+
+            rows_X.append(x)
+            rows_y.append(y_val)
+            rows_meta.append((str(q), asof, qend, weeks_to_qend))
+>>>>>>> main
 
     if not rows_X:
         raise ValueError("No dataset rows generated; check calendar/inputs")
