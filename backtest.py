@@ -6,8 +6,8 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
-from .config import ModelSpec
-from .model import train_model, predict
+from config import ModelSpec
+from model import train_model, predict
 
 
 @dataclass(frozen=True)
@@ -60,11 +60,27 @@ def walk_forward_by_quarter(
         X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
         X_test, y_test = X.iloc[test_idx], y.iloc[test_idx]
 
-        m = train_model(X_train, y_train, model_spec)
-        y_pred = predict(m, X_test)
+        if "asof_close" not in X_test.columns or "ret_20d" not in X_test.columns:
+            raise ValueError("Features must include asof_close and ret_20d for baselines.")
+
+        asof_close = X_test["asof_close"].astype(float).to_numpy()
+        ret_20d = X_test["ret_20d"].fillna(0.0).astype(float).to_numpy()
+
+        y_train_delta = y_train.to_numpy() - X_train["asof_close"].astype(float).to_numpy()
+        m = train_model(X_train, pd.Series(y_train_delta, index=y_train.index), model_spec)
+        delta_pred = predict(m, X_test)
+        y_pred_model = asof_close + delta_pred
+        y_pred_naive = asof_close
+        y_pred_mom = asof_close * (1.0 + ret_20d)
 
         out = df[df["row_id"].isin(test_idx)].copy()
-        out["y_pred"] = y_pred
+        out["y_pred_model"] = y_pred_model
+        out["y_pred_naive"] = y_pred_naive
+        out["y_pred_mom"] = y_pred_mom
+        out["asof_close"] = asof_close
+        out["ret_20d"] = ret_20d
+        if "weeks_to_qend" in X_test.columns:
+            out["weeks_to_qend"] = X_test["weeks_to_qend"].to_numpy()
         preds_rows.append(out)
 
     if not preds_rows:
@@ -72,12 +88,20 @@ def walk_forward_by_quarter(
 
     preds = pd.concat(preds_rows, ignore_index=True)
     y_true = preds["y_true"].to_numpy()
-    y_pred = preds["y_pred"].to_numpy()
+    y_pred_model = preds["y_pred_model"].to_numpy()
+    y_pred_naive = preds["y_pred_naive"].to_numpy()
+    y_pred_mom = preds["y_pred_mom"].to_numpy()
 
     metrics = {
-        "MAE_EUR_per_t": _mae(y_true, y_pred),
-        "RMSE_EUR_per_t": _rmse(y_true, y_pred),
-        "MAPE_pct": _mape(y_true, y_pred),
+        "MAE_model": _mae(y_true, y_pred_model),
+        "RMSE_model": _rmse(y_true, y_pred_model),
+        "MAPE_model": _mape(y_true, y_pred_model),
+        "MAE_naive": _mae(y_true, y_pred_naive),
+        "RMSE_naive": _rmse(y_true, y_pred_naive),
+        "MAPE_naive": _mape(y_true, y_pred_naive),
+        "MAE_mom": _mae(y_true, y_pred_mom),
+        "RMSE_mom": _rmse(y_true, y_pred_mom),
+        "MAPE_mom": _mape(y_true, y_pred_mom),
     }
 
     return BacktestResult(predictions=preds, metrics=metrics)

@@ -1,48 +1,83 @@
 from __future__ import annotations
 
-import json
+import argparse
 from pathlib import Path
 
-import pandas as pd
-
-from .config import AppConfig, DataPaths
-from .pipeline import run_training_pipeline, forecast_next_quarter_end
+from config import AppConfig, DataPaths
+from pipeline import run_training_pipeline, forecast_next_quarter_end
 
 
 def main() -> None:
     """
-    Minimal CLI:
+    Single-series CLI:
+      - loads BL2c1 CSV
       - trains model
       - prints backtest metrics
       - prints latest weekly forecast stub
     """
-    # Example config; adapt paths to your environment.
-    cfg = AppConfig(
-        data=DataPaths(
-            contracts_path=Path("data/matif_wheat_contracts.csv"),
-            macro_path=Path("data/macro_features.csv"),
-            fundamentals_path=Path("data/fundamentals_features.csv"),
-        )
+    parser = argparse.ArgumentParser(description="Wheat BL2c1 single-series pipeline")
+    parser.add_argument(
+        "--csv",
+        default="data/wheat_prices.csv",
+        help="Path to BL2c1 CSV (semicolon-separated). Default: data/wheat_prices.csv",
     )
+    args = parser.parse_args()
 
-    # You must provide a contract expiry calendar.
-    # Recommended: maintain as CSV and load it here.
-    # For now, we load from JSON file if exists.
-    expiry_path = Path("data/expiry_calendar.json")
-    if not expiry_path.exists():
-        raise SystemExit(
-            "Missing data/expiry_calendar.json. Provide mapping {contract: 'YYYY-MM-DD'} "
-            "for all contracts in contracts table."
-        )
-
-    expiry_calendar = json.loads(expiry_path.read_text(encoding="utf-8"))
-    expiry_calendar = {k: pd.Timestamp(v) for k, v in expiry_calendar.items()}
-
-    model, artifacts, metrics = run_training_pipeline(cfg, expiry_calendar)
+    csv_path = Path(args.csv)
+    cfg = AppConfig(data=DataPaths(contracts_path=csv_path))
+    model, artifacts, bt = run_training_pipeline(cfg, str(csv_path))
 
     print("Backtest metrics:")
-    for k, v in metrics.items():
+    for k, v in bt.metrics.items():
         print(f"  {k}: {v:.4f}")
+
+    print(f"Rows used: {len(artifacts.dataset_meta)}")
+    print(f"Quarters covered: {artifacts.dataset_meta['quarter'].nunique()}")
+
+    preds = bt.predictions.copy()
+    earliest = preds.sort_values("asof_date").groupby("quarter", as_index=False).first()
+    earliest["abs_err_model"] = (earliest["y_true"] - earliest["y_pred_model"]).abs()
+    earliest["abs_err_naive"] = (earliest["y_true"] - earliest["y_pred_naive"]).abs()
+    earliest["abs_err_mom"] = (earliest["y_true"] - earliest["y_pred_mom"]).abs()
+    worst = earliest.sort_values("abs_err_model", ascending=False).head(10)
+
+    print("\nWorst 10 quarters (model abs error):")
+    print(
+        worst[
+            [
+                "quarter",
+                "asof_date",
+                "qend_date",
+                "asof_close",
+                "y_true",
+                "y_pred_model",
+                "y_pred_naive",
+                "y_pred_mom",
+                "abs_err_model",
+                "abs_err_naive",
+                "abs_err_mom",
+            ]
+        ].to_string(index=False)
+    )
+
+    print("\nSanity sample (10 rows):")
+    sample = preds.sort_values("asof_date").head(10)
+    print(
+        sample[
+            [
+                "quarter",
+                "asof_date",
+                "qend_date",
+                "weeks_to_qend",
+                "asof_close",
+                "ret_20d",
+                "y_true",
+                "y_pred_model",
+                "y_pred_naive",
+                "y_pred_mom",
+            ]
+        ].to_string(index=False)
+    )
 
     try:
         fc = forecast_next_quarter_end(model, artifacts, cfg)
