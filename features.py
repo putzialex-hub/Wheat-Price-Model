@@ -12,6 +12,7 @@ def add_market_features(prices: pd.DataFrame) -> pd.DataFrame:
     df = prices.copy()
 
     px = df["close"]
+    df["asof_close"] = px
     df["ret_1d"] = px.pct_change()
     df["ret_5d"] = px.pct_change(5)
     df["ret_20d"] = px.pct_change(20)

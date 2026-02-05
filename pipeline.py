@@ -11,7 +11,7 @@ from data_loader import load_bl2c1_csv
 from features import add_market_features, latest_available_merge
 from dataset import build_quarter_end_dataset
 from model import train_model, TrainedModel
-from backtest import walk_forward_by_quarter
+from backtest import BacktestResult, walk_forward_by_quarter
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ def load_optional_table(path: Optional[Path]) -> Optional[pd.DataFrame]:
 def run_training_pipeline(
     cfg: AppConfig,
     price_csv_path: str,
-) -> tuple[TrainedModel, PipelineArtifacts, dict]:
+) -> tuple[TrainedModel, PipelineArtifacts, BacktestResult]:
     """
     End-to-end:
       - load data
@@ -62,8 +62,9 @@ def run_training_pipeline(
     # Backtest
     bt = walk_forward_by_quarter(ds.X, ds.y, ds.meta, cfg.model)
 
-    # Train final model on full dataset
-    model = train_model(ds.X, ds.y, cfg.model)
+    # Train final model on full dataset (delta target)
+    y_delta = ds.y.to_numpy() - ds.X["asof_close"].astype(float).to_numpy()
+    model = train_model(ds.X, pd.Series(y_delta, index=ds.y.index), cfg.model)
 
     artifacts = PipelineArtifacts(
         prices=prices,
@@ -71,7 +72,7 @@ def run_training_pipeline(
         dataset_meta=ds.meta,
     )
 
-    return model, artifacts, bt.metrics
+    return model, artifacts, bt
 
 
 def forecast_next_quarter_end(
@@ -85,15 +86,22 @@ def forecast_next_quarter_end(
     """
     feats = artifacts.features_daily.copy()
     last_date = feats.index.max()
-
-    # Only run on Fridays for the weekly update job
-    if last_date.weekday() != 4:
-        raise ValueError(f"Latest date {last_date.date()} is not a Friday; weekly job should run after Friday close.")
+    friday_dates = feats.index[feats.index.weekday == 4]
+    if friday_dates.empty:
+        raise ValueError("No Friday dates available in features; cannot compute live forecast.")
+    asof_date = friday_dates[friday_dates <= last_date].max()
+    if (last_date - asof_date).days > 7:
+        print(
+            "Warning: latest date is more than 7 days after the last available Friday "
+            f"({asof_date.date()})."
+        )
 
     # Minimal input row
-    X_live = feats.loc[[last_date]].copy()
+    X_live = feats.loc[[asof_date]].copy()
     # weeks_to_qend is unknown here without computing quarter-end; for live, keep 0 or compute externally
     X_live["weeks_to_qend"] = 0
 
-    y_pred = model.pipeline.predict(X_live)[0]
-    return pd.DataFrame({"asof_date": [last_date], "forecast_qend": [float(y_pred)]})
+    delta_pred = model.pipeline.predict(X_live)[0]
+    asof_close = float(X_live["asof_close"].iloc[0])
+    forecast = asof_close + float(delta_pred)
+    return pd.DataFrame({"asof_date": [asof_date], "forecast_qend": [forecast]})
