@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from config import ModelSpec
-from dataset import from_target, to_target
+from target_utils import from_target, to_target
 from collections import deque
 
 from calibration import (
@@ -254,12 +254,14 @@ def walk_forward_by_quarter(
         use_model_ridge = None
         y_pred_hybrid_tree = None
         y_pred_hybrid_ridge = None
+        delta_pred_tree_price = y_pred_tree - asof_close
+        delta_pred_ridge_price = y_pred_ridge - asof_close
         if enable_hybrid:
             if hybrid_model in {"tree", "both"}:
-                use_model_tree = np.abs(delta_pred_tree) >= hybrid_threshold
+                use_model_tree = np.abs(delta_pred_tree_price) >= hybrid_threshold
                 y_pred_hybrid_tree = np.where(use_model_tree, y_pred_tree, y_pred_naive)
             if hybrid_model in {"ridge", "both"}:
-                use_model_ridge = np.abs(delta_pred_ridge) >= hybrid_threshold
+                use_model_ridge = np.abs(delta_pred_ridge_price) >= hybrid_threshold
                 y_pred_hybrid_ridge = np.where(use_model_ridge, y_pred_ridge, y_pred_naive)
         else:
             if hybrid_model in {"tree", "both"}:

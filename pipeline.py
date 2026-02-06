@@ -11,7 +11,8 @@ from config import AppConfig
 from data_loader import load_bl2c1_csv, load_bl2c2_csv
 import features
 from features import add_market_features, add_macro_return_features, latest_available_merge
-from dataset import build_quarter_end_dataset, from_target
+from dataset import build_quarter_end_dataset
+from target_utils import from_target
 from calibration import (
     apply_conformal,
     apply_residual_interval,
