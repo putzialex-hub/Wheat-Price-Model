@@ -244,6 +244,16 @@ def main() -> None:
         for key, label in metric_map:
             if key in bt.metrics:
                 print(f"  {label}: {bt.metrics[key]:.4f}")
+        print("\nResidual-conformal intervals:")
+        resid_map = [
+            ("coverage_resid_naive", "coverage_resid_naive"),
+            ("width_resid_naive", "width_resid_naive"),
+            ("coverage_resid_p50", "coverage_resid_p50"),
+            ("width_resid_p50", "width_resid_p50"),
+        ]
+        for key, label in resid_map:
+            if key in bt.metrics:
+                print(f"  {label}: {bt.metrics[key]:.4f}")
 
     print(f"Rows used: {len(artifacts.dataset_meta)}")
     print(f"Quarters covered: {artifacts.dataset_meta['quarter'].nunique()}")
@@ -268,6 +278,15 @@ def main() -> None:
         q_hat_vals = preds["q_hat"]
         print(
             "q_hat stats:",
+            f"mean={q_hat_vals.mean():.4f}",
+            f"median={q_hat_vals.median():.4f}",
+            f"p90={np.nanpercentile(q_hat_vals, 90):.4f}",
+            f"max={q_hat_vals.max():.4f}",
+        )
+    if args.intervals and "q_hat_naive" in preds.columns:
+        q_hat_vals = preds["q_hat_naive"]
+        print(
+            "q_hat_naive stats:",
             f"mean={q_hat_vals.mean():.4f}",
             f"median={q_hat_vals.median():.4f}",
             f"p90={np.nanpercentile(q_hat_vals, 90):.4f}",
@@ -394,6 +413,15 @@ def main() -> None:
                 "risk_score_raw",
                 "risk_score_cal",
                 "q_hat",
+                "forecast_point_naive",
+                "low_naive",
+                "high_naive",
+                "risk_score_naive",
+                "q_hat_naive",
+                "low_p50",
+                "high_p50",
+                "risk_score_p50",
+                "q_hat_p50",
             ]
             cols = [c for c in cols if c in fc.columns]
             print(fc[cols].to_string(index=False))
