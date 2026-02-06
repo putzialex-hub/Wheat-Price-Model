@@ -22,6 +22,34 @@ class DatasetOutput:
     meta: pd.DataFrame  # quarter, asof_date, qend_date, weeks_to_qend
 
 
+def to_target(y_price: float | np.ndarray, asof_close: float | np.ndarray, target_mode: str) -> np.ndarray:
+    y_price_arr = np.asarray(y_price, dtype=float)
+    asof_arr = np.asarray(asof_close, dtype=float)
+    if target_mode == "level":
+        return y_price_arr
+    if target_mode == "delta":
+        return y_price_arr - asof_arr
+    if target_mode == "log_return":
+        if np.any(asof_arr <= 0):
+            raise ValueError("asof_close must be > 0 for log_return target.")
+        return np.log(y_price_arr / asof_arr)
+    raise ValueError("target_mode must be one of: level, delta, log_return")
+
+
+def from_target(y_target: float | np.ndarray, asof_close: float | np.ndarray, target_mode: str) -> np.ndarray:
+    y_target_arr = np.asarray(y_target, dtype=float)
+    asof_arr = np.asarray(asof_close, dtype=float)
+    if target_mode == "level":
+        return y_target_arr
+    if target_mode == "delta":
+        return asof_arr + y_target_arr
+    if target_mode == "log_return":
+        if np.any(asof_arr <= 0):
+            raise ValueError("asof_close must be > 0 for log_return target.")
+        return asof_arr * np.exp(y_target_arr)
+    raise ValueError("target_mode must be one of: level, delta, log_return")
+
+
 def _fridays_between(dates: pd.DatetimeIndex, start: pd.Timestamp, end: pd.Timestamp) -> List[pd.Timestamp]:
     start = pd.Timestamp(start).normalize()
     end = pd.Timestamp(end).normalize()
@@ -35,6 +63,7 @@ def build_quarter_end_dataset(
     trading_days: pd.DatetimeIndex,
     spec: ForecastSpec,
     primary_only: bool = True,
+    target_mode: str = "level",
 ) -> DatasetOutput:
     """
     Build supervised dataset:
@@ -86,9 +115,9 @@ def build_quarter_end_dataset(
 
         # Determine target value at qend
         if spec.prefer_settlement_target and pd.notna(cont_daily.loc[qend, "settlement"]):
-            y_val = float(cont_daily.loc[qend, "settlement"])
+            y_price = float(cont_daily.loc[qend, "settlement"])
         else:
-            y_val = float(cont_daily.loc[qend, "close"])
+            y_price = float(cont_daily.loc[qend, "close"])
 
         for asof in asof_dates:
             if asof not in features_daily.index:
@@ -98,18 +127,28 @@ def build_quarter_end_dataset(
             x["weeks_to_qend"] = weeks_to_qend
             is_primary = asof == asof_primary
 
+            asof_close = float(x["asof_close"])
+            y_target = to_target(y_price, asof_close, target_mode)
             rows_X.append(x)
-            rows_y.append(y_val)
-            rows_meta.append((str(q), asof, qend, weeks_to_qend, is_primary))
+            rows_y.append(float(y_target))
+            rows_meta.append((str(q), asof, qend, weeks_to_qend, is_primary, y_price, float(y_target)))
 
     if not rows_X:
         raise ValueError("No dataset rows generated; check calendar/inputs")
 
     X = pd.DataFrame(rows_X)
-    y = pd.Series(rows_y, name="target_qend_settlement")
+    y = pd.Series(rows_y, name="target_qend")
     meta = pd.DataFrame(
         rows_meta,
-        columns=["quarter", "asof_date", "qend_date", "weeks_to_qend", "is_primary_asof"],
+        columns=[
+            "quarter",
+            "asof_date",
+            "qend_date",
+            "weeks_to_qend",
+            "is_primary_asof",
+            "y_true_price",
+            "y_true_target",
+        ],
     )
 
     # Basic cleanup: drop columns with all-missing

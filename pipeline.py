@@ -11,7 +11,7 @@ from config import AppConfig
 from data_loader import load_bl2c1_csv, load_bl2c2_csv
 import features
 from features import add_market_features, add_macro_return_features, latest_available_merge
-from dataset import build_quarter_end_dataset
+from dataset import build_quarter_end_dataset, from_target
 from calibration import (
     apply_conformal,
     apply_residual_interval,
@@ -37,6 +37,7 @@ class PipelineArtifacts:
     dataset_X: pd.DataFrame
     dataset_y: pd.Series
     quantile_models: QuantileModels | None
+    target_mode: str
 
 
 def load_optional_table(path: Optional[Path]) -> Optional[pd.DataFrame]:
@@ -57,6 +58,7 @@ def run_training_pipeline(
     hybrid_threshold: float = 10.0,
     enable_hybrid: bool = True,
     hybrid_model: str = "ridge",
+    target_mode: str = "level",
 ) -> tuple[TrainedModel, PipelineArtifacts, BacktestResult]:
     """
     End-to-end:
@@ -104,6 +106,7 @@ def run_training_pipeline(
         trading_days=trading_days,
         spec=cfg.forecast,
         primary_only=primary_only,
+        target_mode=target_mode,
     )
 
     # Backtest
@@ -115,12 +118,12 @@ def run_training_pipeline(
         hybrid_threshold=hybrid_threshold,
         enable_hybrid=enable_hybrid,
         hybrid_model=hybrid_model,
+        target_mode=target_mode,
     )
 
-    # Train final model on full dataset (delta target)
-    y_delta = ds.y.to_numpy() - ds.X["asof_close"].astype(float).to_numpy()
-    model = train_model(ds.X, pd.Series(y_delta, index=ds.y.index), cfg.model, model_type="tree")
-    quantile_models = train_quantile_models(ds.X, pd.Series(y_delta, index=ds.y.index))
+    # Train final model on full dataset (target-mode)
+    model = train_model(ds.X, ds.y, cfg.model, model_type="tree")
+    quantile_models = train_quantile_models(ds.X, ds.y)
 
     artifacts = PipelineArtifacts(
         prices=prices,
@@ -129,6 +132,7 @@ def run_training_pipeline(
         dataset_X=ds.X,
         dataset_y=ds.y,
         quantile_models=quantile_models,
+        target_mode=target_mode,
     )
 
     return model, artifacts, bt
@@ -160,18 +164,19 @@ def forecast_next_quarter_end(
     # weeks_to_qend is unknown here without computing quarter-end; for live, keep 0 or compute externally
     X_live["weeks_to_qend"] = 0
 
-    delta_pred = model.pipeline.predict(X_live)[0]
+    target_mode = artifacts.target_mode
+    pred_target = model.pipeline.predict(X_live)[0]
     asof_close = float(X_live["asof_close"].iloc[0])
-    forecast = asof_close + float(delta_pred)
+    forecast = float(from_target(pred_target, asof_close, target_mode))
     if artifacts.quantile_models is None:
         return pd.DataFrame({"asof_date": [asof_date], "forecast_qend": [forecast]})
-    y_all_delta = artifacts.dataset_y.to_numpy() - artifacts.dataset_X["asof_close"].astype(float).to_numpy()
+    y_all_target = artifacts.dataset_y.to_numpy()
     calib_size = max(20, int(len(artifacts.dataset_X) * 0.2))
     if len(artifacts.dataset_X) > calib_size:
         fit_X = artifacts.dataset_X.iloc[:-calib_size]
         cal_X = artifacts.dataset_X.iloc[-calib_size:]
-        fit_y = pd.Series(y_all_delta[:-calib_size], index=fit_X.index)
-        cal_y = pd.Series(y_all_delta[-calib_size:], index=cal_X.index)
+        fit_y = pd.Series(y_all_target[:-calib_size], index=fit_X.index)
+        cal_y = pd.Series(y_all_target[-calib_size:], index=cal_X.index)
         quantile_models = train_quantile_models(fit_X, fit_y)
         cal_pred = predict_quantiles(quantile_models, cal_X)
         cal_scores = np.maximum(
@@ -189,9 +194,12 @@ def forecast_next_quarter_end(
             q_hat_roll = q_hat
         cal_asof = cal_X["asof_close"].astype(float).to_numpy()
         cal_y_level = artifacts.dataset_y.to_numpy()[-calib_size:]
-        cal_p50 = cal_asof + cal_pred["delta_p50"].to_numpy()
-        q_hat_naive = conformal_qhat_residual(cal_y_level, cal_asof, cfg.model.interval_alpha)
-        q_hat_p50 = conformal_qhat_residual(cal_y_level, cal_p50, cfg.model.interval_alpha)
+        cal_p50_target = cal_pred["delta_p50"].to_numpy()
+        cal_naive_target = np.zeros_like(cal_p50_target)
+        if target_mode == "level":
+            cal_naive_target = cal_asof
+        q_hat_naive = conformal_qhat_residual(cal_y.to_numpy(), cal_naive_target, cfg.model.interval_alpha)
+        q_hat_p50 = conformal_qhat_residual(cal_y.to_numpy(), cal_p50_target, cfg.model.interval_alpha)
     else:
         quantile_models = artifacts.quantile_models
         q_hat = 0.0
@@ -199,43 +207,57 @@ def forecast_next_quarter_end(
         q_hat_naive = 0.0
         q_hat_p50 = 0.0
     delta_q = predict_quantiles(quantile_models, X_live).iloc[0]
-    p10_raw = asof_close + float(delta_q["delta_p10"])
-    p50 = asof_close + float(delta_q["delta_p50"])
-    p90_raw = asof_close + float(delta_q["delta_p90"])
-    p10_cal, p90_cal = apply_conformal(np.array([p10_raw]), np.array([p90_raw]), q_hat)
-    p10_cal_roll, p90_cal_roll = apply_conformal(
-        np.array([p10_raw]),
-        np.array([p90_raw]),
+    p10_target = float(delta_q["delta_p10"])
+    p50_target = float(delta_q["delta_p50"])
+    p90_target = float(delta_q["delta_p90"])
+    p10_raw = float(from_target(p10_target, asof_close, target_mode))
+    p50 = float(from_target(p50_target, asof_close, target_mode))
+    p90_raw = float(from_target(p90_target, asof_close, target_mode))
+    p10_cal_t, p90_cal_t = apply_conformal(np.array([p10_target]), np.array([p90_target]), q_hat)
+    p10_cal_roll_t, p90_cal_roll_t = apply_conformal(
+        np.array([p10_target]),
+        np.array([p90_target]),
         q_hat_roll,
     )
+    p10_cal = float(from_target(p10_cal_t[0], asof_close, target_mode))
+    p90_cal = float(from_target(p90_cal_t[0], asof_close, target_mode))
+    p10_cal_roll = float(from_target(p10_cal_roll_t[0], asof_close, target_mode))
+    p90_cal_roll = float(from_target(p90_cal_roll_t[0], asof_close, target_mode))
     risk_score_raw = p90_raw - p10_raw
-    risk_score_cal = float(p90_cal[0] - p10_cal[0])
-    low_naive, high_naive = apply_residual_interval(np.array([asof_close]), q_hat_naive)
-    low_p50, high_p50 = apply_residual_interval(np.array([p50]), q_hat_p50)
+    risk_score_cal = p90_cal - p10_cal
+    risk_score_roll = p90_cal_roll - p10_cal_roll
+    naive_target = 0.0 if target_mode in {"delta", "log_return"} else asof_close
+    low_naive_t, high_naive_t = apply_residual_interval(np.array([naive_target]), q_hat_naive)
+    low_naive = float(from_target(low_naive_t[0], asof_close, target_mode))
+    high_naive = float(from_target(high_naive_t[0], asof_close, target_mode))
+    low_p50_t, high_p50_t = apply_residual_interval(np.array([p50_target]), q_hat_p50)
+    low_p50 = float(from_target(low_p50_t[0], asof_close, target_mode))
+    high_p50 = float(from_target(high_p50_t[0], asof_close, target_mode))
     return pd.DataFrame(
         {
             "asof_date": [asof_date],
             "forecast_qend": [forecast],
             "forecast_p50": [p50],
+            "forecast_target_p50": [p50_target],
             "p10_raw": [p10_raw],
             "p90_raw": [p90_raw],
-            "p10_cal": [float(p10_cal[0])],
-            "p90_cal": [float(p90_cal[0])],
+            "p10_cal": [p10_cal],
+            "p90_cal": [p90_cal],
             "risk_score_raw": [risk_score_raw],
             "risk_score_cal": [risk_score_cal],
             "q_hat": [q_hat],
-            "p10_cal_roll": [float(p10_cal_roll[0])],
-            "p90_cal_roll": [float(p90_cal_roll[0])],
-            "risk_score_roll": [float(p90_cal_roll[0] - p10_cal_roll[0])],
+            "p10_cal_roll": [p10_cal_roll],
+            "p90_cal_roll": [p90_cal_roll],
+            "risk_score_roll": [risk_score_roll],
             "q_hat_roll": [q_hat_roll],
             "forecast_point_naive": [asof_close],
-            "low_naive": [float(low_naive[0])],
-            "high_naive": [float(high_naive[0])],
-            "risk_score_naive": [float(high_naive[0] - low_naive[0])],
+            "low_naive": [low_naive],
+            "high_naive": [high_naive],
+            "risk_score_naive": [high_naive - low_naive],
             "q_hat_naive": [q_hat_naive],
-            "low_p50": [float(low_p50[0])],
-            "high_p50": [float(high_p50[0])],
-            "risk_score_p50": [float(high_p50[0] - low_p50[0])],
+            "low_p50": [low_p50],
+            "high_p50": [high_p50],
+            "risk_score_p50": [high_p50 - low_p50],
             "q_hat_p50": [q_hat_p50],
         }
     )

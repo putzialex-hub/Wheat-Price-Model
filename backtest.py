@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from config import ModelSpec
+from dataset import from_target, to_target
 from collections import deque
 
 from calibration import (
@@ -113,6 +114,7 @@ def walk_forward_by_quarter(
     hybrid_threshold: float = 10.0,
     enable_hybrid: bool = True,
     hybrid_model: str = "ridge",
+    target_mode: str = "level",
 ) -> BacktestResult:
     """
     Walk-forward:
@@ -125,7 +127,7 @@ def walk_forward_by_quarter(
         raise ValueError("calibration_mode must be one of: per_fold, pooled, rolling")
 
     df = meta.copy()
-    df["y_true"] = y.values
+    df["y_true_target"] = y.values
     df["row_id"] = np.arange(len(df))
     df = df.sort_values(["qend_date", "asof_date"]).reset_index(drop=True)
 
@@ -135,6 +137,7 @@ def walk_forward_by_quarter(
     pooled_scores: List[float] = []
     rolling_scores = deque(maxlen=model_spec.rolling_folds)
     rolling_pool: List[float] = []
+    y_price_all = df["y_true_price"].to_numpy()
 
     for i, qend in enumerate(unique_qends):
         train_qends = unique_qends[:i]
@@ -148,6 +151,8 @@ def walk_forward_by_quarter(
         X_test, y_test = X.iloc[test_idx], y.iloc[test_idx]
         X_train_ridge = select_features_for_model(X_train, "ridge")
         X_test_ridge = select_features_for_model(X_test, "ridge")
+        y_price_train = y_price_all[train_idx]
+        y_price_test = y_price_all[test_idx]
 
         if "asof_close" not in X_test.columns or "ret_20d" not in X_test.columns:
             raise ValueError("Features must include asof_close and ret_20d for baselines.")
@@ -155,29 +160,26 @@ def walk_forward_by_quarter(
         asof_close = X_test["asof_close"].astype(float).to_numpy()
         ret_20d = X_test["ret_20d"].fillna(0.0).astype(float).to_numpy()
 
-        y_train_delta = y_train.to_numpy() - X_train["asof_close"].astype(float).to_numpy()
-        y_train_delta = pd.Series(y_train_delta, index=y_train.index)
+        y_train_target = y_train
+        tree_model = train_model(X_train, y_train_target, model_spec, model_type="tree")
+        pred_target_tree = predict(tree_model, X_test)
 
-        tree_model = train_model(X_train, y_train_delta, model_spec, model_type="tree")
-        delta_pred_tree = predict(tree_model, X_test)
-
-        y_train_delta_ridge = y_train.to_numpy() - X_train_ridge["asof_close"].astype(float).to_numpy()
-        y_train_delta_ridge = pd.Series(y_train_delta_ridge, index=y_train.index)
+        y_train_target_ridge = y_train_target
         ridge_model = train_model(
             X_train_ridge,
-            y_train_delta_ridge,
+            y_train_target_ridge,
             model_spec,
             model_type="ridge",
             ridge_alpha=ridge_alpha,
         )
-        delta_pred_ridge = predict(ridge_model, X_test_ridge)
+        pred_target_ridge = predict(ridge_model, X_test_ridge)
 
         calib_size = max(20, int(len(X_train) * 0.2))
         if len(X_train) > calib_size:
             fit_X = X_train.iloc[:-calib_size]
-            fit_y = y_train_delta.iloc[:-calib_size]
+            fit_y = y_train_target.iloc[:-calib_size]
             cal_X = X_train.iloc[-calib_size:]
-            cal_y = y_train_delta.iloc[-calib_size:]
+            cal_y = y_train_target.iloc[-calib_size:]
             quantile_models = train_quantile_models(fit_X, fit_y)
             cal_pred = predict_quantiles(quantile_models, cal_X)
             cal_scores = _nonconformity_scores(
@@ -186,10 +188,11 @@ def walk_forward_by_quarter(
                 cal_pred["delta_p90"].to_numpy(),
             )
             cal_asof = cal_X["asof_close"].astype(float).to_numpy()
-            cal_y_level = y_train.iloc[-calib_size:].to_numpy()
-            cal_p50 = cal_asof + cal_pred["delta_p50"].to_numpy()
-            q_hat_naive = conformal_qhat_residual(cal_y_level, cal_asof, model_spec.interval_alpha)
-            q_hat_p50 = conformal_qhat_residual(cal_y_level, cal_p50, model_spec.interval_alpha)
+            cal_y_target = cal_y.to_numpy()
+            cal_naive_target = to_target(cal_asof, cal_asof, target_mode)
+            cal_p50_target = cal_pred["delta_p50"].to_numpy()
+            q_hat_naive = conformal_qhat_residual(cal_y_target, cal_naive_target, model_spec.interval_alpha)
+            q_hat_p50 = conformal_qhat_residual(cal_y_target, cal_p50_target, model_spec.interval_alpha)
             pooled_scores.extend(cal_scores.tolist())
             rolling_scores.append(cal_scores)
             rolling_pool = rolling_pool_append(rolling_pool, cal_scores, model_spec.rolling_calibration_size)
@@ -209,7 +212,7 @@ def walk_forward_by_quarter(
             else:
                 q_hat_roll = q_hat
         else:
-            quantile_models = train_quantile_models(X_train, y_train_delta)
+            quantile_models = train_quantile_models(X_train, y_train_target)
             q_hat = 0.0
             q_hat_naive = 0.0
             q_hat_p50 = 0.0
@@ -217,20 +220,33 @@ def walk_forward_by_quarter(
         delta_quantiles = predict_quantiles(quantile_models, X_test)
 
         if delta_clip is not None:
-            delta_pred_tree = np.clip(delta_pred_tree, -delta_clip, delta_clip)
-            delta_pred_ridge = np.clip(delta_pred_ridge, -delta_clip, delta_clip)
+            pred_target_tree = np.clip(pred_target_tree, -delta_clip, delta_clip)
+            pred_target_ridge = np.clip(pred_target_ridge, -delta_clip, delta_clip)
             for col in ["delta_p10", "delta_p50", "delta_p90"]:
                 delta_quantiles[col] = np.clip(delta_quantiles[col], -delta_clip, delta_clip)
 
-        y_pred_tree = asof_close + delta_pred_tree
-        y_pred_ridge = asof_close + delta_pred_ridge
-        y_pred_p10 = asof_close + delta_quantiles["delta_p10"].to_numpy()
-        y_pred_p50 = asof_close + delta_quantiles["delta_p50"].to_numpy()
-        y_pred_p90 = asof_close + delta_quantiles["delta_p90"].to_numpy()
-        y_pred_p10_cal, y_pred_p90_cal = apply_conformal(y_pred_p10, y_pred_p90, q_hat)
-        p10_cal_roll, p90_cal_roll = apply_conformal(y_pred_p10, y_pred_p90, q_hat_roll)
-        low_naive, high_naive = apply_residual_interval(asof_close, q_hat_naive)
-        low_p50, high_p50 = apply_residual_interval(y_pred_p50, q_hat_p50)
+        asof_close_arr = asof_close
+        y_pred_tree = from_target(pred_target_tree, asof_close_arr, target_mode)
+        y_pred_ridge = from_target(pred_target_ridge, asof_close_arr, target_mode)
+        y_pred_p10_target = delta_quantiles["delta_p10"].to_numpy()
+        y_pred_p50_target = delta_quantiles["delta_p50"].to_numpy()
+        y_pred_p90_target = delta_quantiles["delta_p90"].to_numpy()
+        y_pred_p10 = from_target(y_pred_p10_target, asof_close_arr, target_mode)
+        y_pred_p50 = from_target(y_pred_p50_target, asof_close_arr, target_mode)
+        y_pred_p90 = from_target(y_pred_p90_target, asof_close_arr, target_mode)
+        p10_cal_t, p90_cal_t = apply_conformal(y_pred_p10_target, y_pred_p90_target, q_hat)
+        p10_cal_roll_t, p90_cal_roll_t = apply_conformal(y_pred_p10_target, y_pred_p90_target, q_hat_roll)
+        y_pred_p10_cal = from_target(p10_cal_t, asof_close_arr, target_mode)
+        y_pred_p90_cal = from_target(p90_cal_t, asof_close_arr, target_mode)
+        p10_cal_roll = from_target(p10_cal_roll_t, asof_close_arr, target_mode)
+        p90_cal_roll = from_target(p90_cal_roll_t, asof_close_arr, target_mode)
+        naive_target = to_target(asof_close_arr, asof_close_arr, target_mode)
+        low_naive_t, high_naive_t = apply_residual_interval(naive_target, q_hat_naive)
+        low_p50_t, high_p50_t = apply_residual_interval(y_pred_p50_target, q_hat_p50)
+        low_naive = from_target(low_naive_t, asof_close_arr, target_mode)
+        high_naive = from_target(high_naive_t, asof_close_arr, target_mode)
+        low_p50 = from_target(low_p50_t, asof_close_arr, target_mode)
+        high_p50 = from_target(high_p50_t, asof_close_arr, target_mode)
         y_pred_naive = asof_close
         y_pred_mom = asof_close * (1.0 + ret_20d)
 
@@ -267,6 +283,7 @@ def walk_forward_by_quarter(
         out["q_hat_roll"] = q_hat_roll
         out["p10_cal_roll"] = p10_cal_roll
         out["p90_cal_roll"] = p90_cal_roll
+        out["y_pred_target_p50"] = y_pred_p50_target
         out["low_naive"] = low_naive
         out["high_naive"] = high_naive
         out["q_hat_naive"] = q_hat_naive
@@ -283,6 +300,8 @@ def walk_forward_by_quarter(
         out["y_pred_mom"] = y_pred_mom
         out["asof_close"] = asof_close
         out["ret_20d"] = ret_20d
+        out["y_true_price"] = y_price_test
+        out["y_true_target"] = y_test.to_numpy()
         if "weeks_to_qend" in X_test.columns:
             out["weeks_to_qend"] = X_test["weeks_to_qend"].to_numpy()
         preds_rows.append(out)
@@ -291,11 +310,13 @@ def walk_forward_by_quarter(
         raise ValueError("Backtest produced no predictions; check min_train_quarters or data length")
 
     preds = pd.concat(preds_rows, ignore_index=True)
-    y_true = preds["y_true"].to_numpy()
+    y_true = preds["y_true_price"].to_numpy()
+    y_true_target = preds["y_true_target"].to_numpy()
     y_pred_tree = preds["y_pred_tree"].to_numpy()
     y_pred_ridge = preds["y_pred_ridge"].to_numpy()
     y_pred_p10 = preds["y_pred_p10"].to_numpy()
     y_pred_p50 = preds["y_pred_p50"].to_numpy()
+    y_pred_target_p50 = preds["y_pred_target_p50"].to_numpy()
     y_pred_p90 = preds["y_pred_p90"].to_numpy()
     y_pred_p10_cal = preds["y_pred_p10_cal"].to_numpy()
     y_pred_p90_cal = preds["y_pred_p90_cal"].to_numpy()
@@ -336,6 +357,7 @@ def walk_forward_by_quarter(
         "MAPE_ridge": _mape(y_true, y_pred_ridge),
         "MAE_p50": _mae(y_true, y_pred_p50),
         "MAPE_p50": _mape(y_true, y_pred_p50),
+        "MAE_target_p50": _mae(y_true_target, y_pred_target_p50),
         "coverage_80_raw": float(np.mean((y_true >= y_pred_p10) & (y_true <= y_pred_p90))),
         "avg_width_80_raw": float(np.mean(y_pred_p90 - y_pred_p10)),
         "coverage_80_cal": float(np.mean((y_true >= y_pred_p10_cal) & (y_true <= y_pred_p90_cal))),

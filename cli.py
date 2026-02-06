@@ -34,6 +34,12 @@ def main() -> None:
         help="Use only the primary as-of row per quarter. Default: True.",
     )
     parser.add_argument(
+        "--target-mode",
+        choices=["level", "delta", "log_return"],
+        default="level",
+        help="Target mode for training (level, delta, log_return). Default: level.",
+    )
+    parser.add_argument(
         "--csv-c2",
         default=None,
         help="Optional BL2c2 CSV (same schema as BL2c1).",
@@ -135,6 +141,8 @@ def main() -> None:
         ),
     )
 
+    print(f"Target mode: {args.target_mode}")
+
     prices = load_bl2c1_csv(csv_path)
     feats = add_market_features(prices)
     if csv_c2_path is not None:
@@ -183,6 +191,7 @@ def main() -> None:
                 hybrid_threshold=threshold,
                 enable_hybrid=True,
                 hybrid_model=args.hybrid_model,
+                target_mode=args.target_mode,
             )
             preds = bt.predictions
             y_true = preds["y_true"].to_numpy()
@@ -237,6 +246,7 @@ def main() -> None:
         hybrid_threshold=args.hybrid_threshold,
         enable_hybrid=not args.no_hybrid,
         hybrid_model=args.hybrid_model,
+        target_mode=args.target_mode,
     )
 
     print("Backtest metrics:")
@@ -249,6 +259,7 @@ def main() -> None:
         metric_map = [
             ("MAE_p50", "MAE_p50"),
             ("MAPE_p50", "MAPE_p50"),
+            ("MAE_target_p50", "MAE_target_p50"),
             ("coverage_80_raw", "coverage_raw"),
             ("avg_width_80_raw", "width_raw"),
             ("coverage_80_cal", "coverage_cal"),
@@ -440,6 +451,7 @@ def main() -> None:
             cols = [
                 "asof_date",
                 "forecast_p50",
+                "forecast_target_p50",
                 "p10_raw",
                 "p90_raw",
                 "p10_cal",
