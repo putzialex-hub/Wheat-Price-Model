@@ -221,7 +221,7 @@ def walk_forward_by_quarter(
             q_hat_roll = 0.0
         delta_quantiles = predict_quantiles(quantile_models, X_test)
 
-        if delta_clip is not None:
+        if delta_clip is not None and target_mode in {"delta", "log_return"}:
             pred_target_tree = np.clip(pred_target_tree, -delta_clip, delta_clip)
             pred_target_ridge = np.clip(pred_target_ridge, -delta_clip, delta_clip)
             for col in ["delta_p10", "delta_p50", "delta_p90"]:
@@ -408,5 +408,7 @@ def walk_forward_by_quarter(
     if os.environ.get("WHEAT_DEBUG_TARGET") == "1":
         print("Debug y_pred_target_p50:\n", pd.Series(y_pred_target_p50).describe())
         print("Debug y_pred_p50 (price):\n", pd.Series(y_pred_p50).describe())
+        if target_mode == "level" and pd.Series(y_pred_p50).nunique() <= 1:
+            raise ValueError("level target_mode produced constant price predictions; check target mapping.")
 
     return BacktestResult(predictions=preds, metrics=metrics)

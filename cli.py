@@ -36,8 +36,8 @@ def main() -> None:
     parser.add_argument(
         "--target-mode",
         choices=["level", "delta", "log_return"],
-        default="level",
-        help="Target mode for training (level, delta, log_return). Default: level.",
+        default="log_return",
+        help="Target mode for training (level, delta, log_return). Default: log_return.",
     )
     parser.add_argument(
         "--csv-c2",
