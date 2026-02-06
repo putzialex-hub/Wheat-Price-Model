@@ -62,6 +62,13 @@ class ModelSpec:
     n_estimators: int = 400
     learning_rate: float = 0.05
     max_depth: int = 3
+    ridge_alpha: float = 10.0
+    ridge_alpha_grid: Optional[list[float]] = None
+    interval_alpha: float = 0.2
+    calibration_mode: str = "pooled"
+    min_pool_size: int = 50
+    rolling_folds: int = 12
+    rolling_calibration_size: int = 200
 
 
 @dataclass(frozen=True)
