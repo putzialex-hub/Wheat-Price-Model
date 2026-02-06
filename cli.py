@@ -94,6 +94,12 @@ def main() -> None:
         default="pooled",
         help="Conformal calibration mode. Default: pooled.",
     )
+    parser.add_argument(
+        "--calibration-buckets",
+        type=int,
+        default=3,
+        help="Volatility bucket count (fixed to 3). Default: 3.",
+    )
     args = parser.parse_args()
 
     csv_path = Path(args.csv)
@@ -254,6 +260,23 @@ def main() -> None:
         for key, label in resid_map:
             if key in bt.metrics:
                 print(f"  {label}: {bt.metrics[key]:.4f}")
+        print("\nBucketed calibration (abs(ret_20d)):")
+        bucket_map = [
+            ("coverage_cal_bucket", "coverage_bucket"),
+            ("width_cal_bucket", "width_bucket"),
+            ("coverage_cal_low", "coverage_low"),
+            ("width_cal_low", "width_low"),
+            ("n_low", "n_low"),
+            ("coverage_cal_mid", "coverage_mid"),
+            ("width_cal_mid", "width_mid"),
+            ("n_mid", "n_mid"),
+            ("coverage_cal_high", "coverage_high"),
+            ("width_cal_high", "width_high"),
+            ("n_high", "n_high"),
+        ]
+        for key, label in bucket_map:
+            if key in bt.metrics:
+                print(f"  {label}: {bt.metrics[key]:.4f}")
 
     print(f"Rows used: {len(artifacts.dataset_meta)}")
     print(f"Quarters covered: {artifacts.dataset_meta['quarter'].nunique()}")
@@ -287,6 +310,15 @@ def main() -> None:
         q_hat_vals = preds["q_hat_naive"]
         print(
             "q_hat_naive stats:",
+            f"mean={q_hat_vals.mean():.4f}",
+            f"median={q_hat_vals.median():.4f}",
+            f"p90={np.nanpercentile(q_hat_vals, 90):.4f}",
+            f"max={q_hat_vals.max():.4f}",
+        )
+    if args.intervals and "q_hat_bucket" in preds.columns:
+        q_hat_vals = preds["q_hat_bucket"]
+        print(
+            "q_hat_bucket stats:",
             f"mean={q_hat_vals.mean():.4f}",
             f"median={q_hat_vals.median():.4f}",
             f"p90={np.nanpercentile(q_hat_vals, 90):.4f}",
@@ -413,6 +445,12 @@ def main() -> None:
                 "risk_score_raw",
                 "risk_score_cal",
                 "q_hat",
+                "vol_abs",
+                "vol_bucket",
+                "q_hat_bucket",
+                "p10_cal_bucket",
+                "p90_cal_bucket",
+                "risk_score_bucket",
                 "forecast_point_naive",
                 "low_naive",
                 "high_naive",

@@ -15,6 +15,28 @@ def conformal_qhat(scores: np.ndarray, alpha: float) -> float:
     return float(np.partition(s, k - 1)[k - 1])
 
 
+def compute_bucket_edges(vol: np.ndarray) -> tuple[float, float]:
+    v = np.asarray(vol, dtype=float)
+    v = v[np.isfinite(v)]
+    if v.size < 3:
+        return (float("inf"), float("inf"))
+    t1 = float(np.quantile(v, 1 / 3))
+    t2 = float(np.quantile(v, 2 / 3))
+    return (t1, t2)
+
+
+def assign_vol_bucket(vol: np.ndarray, edges: tuple[float, float]) -> np.ndarray:
+    v = np.asarray(vol, dtype=float)
+    t1, t2 = edges
+    if not np.isfinite(t1) or not np.isfinite(t2):
+        return np.full(v.shape, 1, dtype=int)
+    buckets = np.full(v.shape, 1, dtype=int)
+    valid = np.isfinite(v)
+    buckets[(valid) & (v <= t1)] = 0
+    buckets[(valid) & (v > t2)] = 2
+    return buckets
+
+
 def apply_conformal(p10: np.ndarray, p90: np.ndarray, q_hat: float) -> tuple[np.ndarray, np.ndarray]:
     return p10 - q_hat, p90 + q_hat
 

@@ -12,7 +12,14 @@ from data_loader import load_bl2c1_csv, load_bl2c2_csv
 import features
 from features import add_market_features, add_macro_return_features, latest_available_merge
 from dataset import build_quarter_end_dataset
-from calibration import apply_conformal, apply_residual_interval, conformal_qhat, conformal_qhat_residual
+from calibration import (
+    apply_conformal,
+    apply_residual_interval,
+    assign_vol_bucket,
+    compute_bucket_edges,
+    conformal_qhat,
+    conformal_qhat_residual,
+)
 from model import (
     TrainedModel,
     QuantileModels,
@@ -174,6 +181,17 @@ def forecast_next_quarter_end(
         )
         cal_scores = np.maximum(cal_scores, 0.0)
         q_hat = conformal_qhat(cal_scores, cfg.model.interval_alpha)
+        vol_cal = np.abs(cal_X["ret_20d"].to_numpy())
+        edges = compute_bucket_edges(vol_cal)
+        buckets = assign_vol_bucket(vol_cal, edges)
+        pooled_q_hat = conformal_qhat(cal_scores, cfg.model.interval_alpha)
+        bucket_q_hat = {}
+        for bucket_id in (0, 1, 2):
+            bucket_scores = cal_scores[buckets == bucket_id]
+            if bucket_scores.size < 15:
+                bucket_q_hat[bucket_id] = pooled_q_hat
+            else:
+                bucket_q_hat[bucket_id] = conformal_qhat(bucket_scores, cfg.model.interval_alpha)
         cal_asof = cal_X["asof_close"].astype(float).to_numpy()
         cal_y_level = artifacts.dataset_y.to_numpy()[-calib_size:]
         cal_p50 = cal_asof + cal_pred["delta_p50"].to_numpy()
@@ -184,11 +202,22 @@ def forecast_next_quarter_end(
         q_hat = 0.0
         q_hat_naive = 0.0
         q_hat_p50 = 0.0
+        edges = (float("inf"), float("inf"))
+        pooled_q_hat = 0.0
+        bucket_q_hat = {0: 0.0, 1: 0.0, 2: 0.0}
     delta_q = predict_quantiles(quantile_models, X_live).iloc[0]
     p10_raw = asof_close + float(delta_q["delta_p10"])
     p50 = asof_close + float(delta_q["delta_p50"])
     p90_raw = asof_close + float(delta_q["delta_p90"])
     p10_cal, p90_cal = apply_conformal(np.array([p10_raw]), np.array([p90_raw]), q_hat)
+    vol_abs = float(np.abs(X_live["ret_20d"].iloc[0])) if "ret_20d" in X_live.columns else float("nan")
+    vol_bucket = int(assign_vol_bucket(np.array([vol_abs]), edges)[0])
+    q_hat_bucket = float(bucket_q_hat.get(vol_bucket, pooled_q_hat))
+    p10_cal_bucket, p90_cal_bucket = apply_conformal(
+        np.array([p10_raw]),
+        np.array([p90_raw]),
+        q_hat_bucket,
+    )
     risk_score_raw = p90_raw - p10_raw
     risk_score_cal = float(p90_cal[0] - p10_cal[0])
     low_naive, high_naive = apply_residual_interval(np.array([asof_close]), q_hat_naive)
@@ -205,6 +234,12 @@ def forecast_next_quarter_end(
             "risk_score_raw": [risk_score_raw],
             "risk_score_cal": [risk_score_cal],
             "q_hat": [q_hat],
+            "vol_abs": [vol_abs],
+            "vol_bucket": [vol_bucket],
+            "q_hat_bucket": [q_hat_bucket],
+            "p10_cal_bucket": [float(p10_cal_bucket[0])],
+            "p90_cal_bucket": [float(p90_cal_bucket[0])],
+            "risk_score_bucket": [float(p90_cal_bucket[0] - p10_cal_bucket[0])],
             "forecast_point_naive": [asof_close],
             "low_naive": [float(low_naive[0])],
             "high_naive": [float(high_naive[0])],
