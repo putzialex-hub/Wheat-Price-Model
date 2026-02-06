@@ -68,6 +68,7 @@ class ModelSpec:
     calibration_mode: str = "pooled"
     min_pool_size: int = 50
     rolling_folds: int = 12
+    rolling_calibration_size: int = 200
 
 
 @dataclass(frozen=True)

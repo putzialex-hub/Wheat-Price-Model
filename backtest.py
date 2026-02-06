@@ -12,10 +12,9 @@ from collections import deque
 from calibration import (
     apply_conformal,
     apply_residual_interval,
-    assign_vol_bucket,
-    compute_bucket_edges,
     conformal_qhat,
     conformal_qhat_residual,
+    rolling_pool_append,
 )
 from model import predict, train_model, train_quantile_models, predict_quantiles
 
@@ -49,12 +48,10 @@ def _nonconformity_scores(y_true: np.ndarray, p10: np.ndarray, p90: np.ndarray) 
     return np.maximum(scores, 0.0)
 
 
-def _bucket_stats(y_true: np.ndarray, low: np.ndarray, high: np.ndarray, mask: np.ndarray) -> tuple[float, float, int]:
-    if not np.any(mask):
-        return (float("nan"), float("nan"), 0)
-    coverage = float(np.mean((y_true[mask] >= low[mask]) & (y_true[mask] <= high[mask])))
-    width = float(np.mean(high[mask] - low[mask]))
-    return (coverage, width, int(np.sum(mask)))
+def _coverage_width(y_true: np.ndarray, low: np.ndarray, high: np.ndarray) -> tuple[float, float]:
+    coverage = float(np.mean((y_true >= low) & (y_true <= high)))
+    width = float(np.mean(high - low))
+    return coverage, width
 
 
 def select_features_for_model(X: pd.DataFrame, model_type: str) -> pd.DataFrame:
@@ -137,6 +134,7 @@ def walk_forward_by_quarter(
     ridge_alpha = _choose_ridge_alpha(X, y, meta, model_spec)
     pooled_scores: List[float] = []
     rolling_scores = deque(maxlen=model_spec.rolling_folds)
+    rolling_pool: List[float] = []
 
     for i, qend in enumerate(unique_qends):
         train_qends = unique_qends[:i]
@@ -194,6 +192,7 @@ def walk_forward_by_quarter(
             q_hat_p50 = conformal_qhat_residual(cal_y_level, cal_p50, model_spec.interval_alpha)
             pooled_scores.extend(cal_scores.tolist())
             rolling_scores.append(cal_scores)
+            rolling_pool = rolling_pool_append(rolling_pool, cal_scores, model_spec.rolling_calibration_size)
             alpha = model_spec.interval_alpha
             if model_spec.calibration_mode == "pooled" and len(pooled_scores) >= model_spec.min_pool_size:
                 q_hat = conformal_qhat(np.asarray(pooled_scores), alpha)
@@ -205,24 +204,16 @@ def walk_forward_by_quarter(
                     q_hat = conformal_qhat(cal_scores, alpha)
             else:
                 q_hat = conformal_qhat(cal_scores, alpha)
-            vol_cal = np.abs(cal_X["ret_20d"].to_numpy())
-            edges = compute_bucket_edges(vol_cal)
-            buckets = assign_vol_bucket(vol_cal, edges)
-            pooled_q_hat = conformal_qhat(cal_scores, alpha)
-            bucket_q_hat = {}
-            for bucket_id in (0, 1, 2):
-                bucket_scores = cal_scores[buckets == bucket_id]
-                if bucket_scores.size < 15:
-                    bucket_q_hat[bucket_id] = pooled_q_hat
-                else:
-                    bucket_q_hat[bucket_id] = conformal_qhat(bucket_scores, alpha)
+            if len(rolling_pool) >= model_spec.min_pool_size:
+                q_hat_roll = conformal_qhat(np.asarray(rolling_pool), alpha)
+            else:
+                q_hat_roll = q_hat
         else:
             quantile_models = train_quantile_models(X_train, y_train_delta)
             q_hat = 0.0
             q_hat_naive = 0.0
             q_hat_p50 = 0.0
-            edges = (float("inf"), float("inf"))
-            bucket_q_hat = {0: 0.0, 1: 0.0, 2: 0.0}
+            q_hat_roll = 0.0
         delta_quantiles = predict_quantiles(quantile_models, X_test)
 
         if delta_clip is not None:
@@ -237,10 +228,7 @@ def walk_forward_by_quarter(
         y_pred_p50 = asof_close + delta_quantiles["delta_p50"].to_numpy()
         y_pred_p90 = asof_close + delta_quantiles["delta_p90"].to_numpy()
         y_pred_p10_cal, y_pred_p90_cal = apply_conformal(y_pred_p10, y_pred_p90, q_hat)
-        vol_abs = np.abs(ret_20d)
-        vol_bucket = assign_vol_bucket(vol_abs, edges)
-        q_hat_bucket = np.array([bucket_q_hat[int(b)] for b in vol_bucket], dtype=float)
-        p10_cal_bucket, p90_cal_bucket = apply_conformal(y_pred_p10, y_pred_p90, q_hat_bucket)
+        p10_cal_roll, p90_cal_roll = apply_conformal(y_pred_p10, y_pred_p90, q_hat_roll)
         low_naive, high_naive = apply_residual_interval(asof_close, q_hat_naive)
         low_p50, high_p50 = apply_residual_interval(y_pred_p50, q_hat_p50)
         y_pred_naive = asof_close
@@ -276,11 +264,9 @@ def walk_forward_by_quarter(
         out["y_pred_p10_cal"] = y_pred_p10_cal
         out["y_pred_p90_cal"] = y_pred_p90_cal
         out["q_hat"] = q_hat
-        out["vol_abs"] = vol_abs
-        out["vol_bucket"] = vol_bucket
-        out["q_hat_bucket"] = q_hat_bucket
-        out["p10_cal_bucket"] = p10_cal_bucket
-        out["p90_cal_bucket"] = p90_cal_bucket
+        out["q_hat_roll"] = q_hat_roll
+        out["p10_cal_roll"] = p10_cal_roll
+        out["p90_cal_roll"] = p90_cal_roll
         out["low_naive"] = low_naive
         out["high_naive"] = high_naive
         out["q_hat_naive"] = q_hat_naive
@@ -313,9 +299,8 @@ def walk_forward_by_quarter(
     y_pred_p90 = preds["y_pred_p90"].to_numpy()
     y_pred_p10_cal = preds["y_pred_p10_cal"].to_numpy()
     y_pred_p90_cal = preds["y_pred_p90_cal"].to_numpy()
-    p10_cal_bucket = preds["p10_cal_bucket"].to_numpy()
-    p90_cal_bucket = preds["p90_cal_bucket"].to_numpy()
-    vol_bucket = preds["vol_bucket"].to_numpy()
+    p10_cal_roll = preds["p10_cal_roll"].to_numpy()
+    p90_cal_roll = preds["p90_cal_roll"].to_numpy()
     low_naive = preds["low_naive"].to_numpy()
     high_naive = preds["high_naive"].to_numpy()
     low_p50 = preds["low_p50"].to_numpy()
@@ -323,14 +308,24 @@ def walk_forward_by_quarter(
     y_pred_naive = preds["y_pred_naive"].to_numpy()
     y_pred_mom = preds["y_pred_mom"].to_numpy()
 
-    coverage_bucket = float(np.mean((y_true >= p10_cal_bucket) & (y_true <= p90_cal_bucket)))
-    width_bucket = float(np.mean(p90_cal_bucket - p10_cal_bucket))
-    low_mask = vol_bucket == 0
-    mid_mask = vol_bucket == 1
-    high_mask = vol_bucket == 2
-    cov_low, width_low, n_low = _bucket_stats(y_true, p10_cal_bucket, p90_cal_bucket, low_mask)
-    cov_mid, width_mid, n_mid = _bucket_stats(y_true, p10_cal_bucket, p90_cal_bucket, mid_mask)
-    cov_high, width_high, n_high = _bucket_stats(y_true, p10_cal_bucket, p90_cal_bucket, high_mask)
+    coverage_roll, width_roll = _coverage_width(y_true, p10_cal_roll, p90_cal_roll)
+    coverage_cal, width_cal = _coverage_width(y_true, y_pred_p10_cal, y_pred_p90_cal)
+    if preds["qend_date"].nunique() >= 40:
+        recent_qends = sorted(preds["qend_date"].unique())[-40:]
+        recent_mask = preds["qend_date"].isin(recent_qends).to_numpy()
+        coverage_roll_recent, width_roll_recent = _coverage_width(
+            y_true[recent_mask],
+            p10_cal_roll[recent_mask],
+            p90_cal_roll[recent_mask],
+        )
+        coverage_cal_recent, width_cal_recent = _coverage_width(
+            y_true[recent_mask],
+            y_pred_p10_cal[recent_mask],
+            y_pred_p90_cal[recent_mask],
+        )
+    else:
+        coverage_roll_recent, width_roll_recent = float("nan"), float("nan")
+        coverage_cal_recent, width_cal_recent = float("nan"), float("nan")
 
     metrics = {
         "MAE_tree": _mae(y_true, y_pred_tree),
@@ -345,17 +340,12 @@ def walk_forward_by_quarter(
         "avg_width_80_raw": float(np.mean(y_pred_p90 - y_pred_p10)),
         "coverage_80_cal": float(np.mean((y_true >= y_pred_p10_cal) & (y_true <= y_pred_p90_cal))),
         "avg_width_80_cal": float(np.mean(y_pred_p90_cal - y_pred_p10_cal)),
-        "coverage_cal_bucket": coverage_bucket,
-        "width_cal_bucket": width_bucket,
-        "coverage_cal_low": cov_low,
-        "width_cal_low": width_low,
-        "n_low": float(n_low),
-        "coverage_cal_mid": cov_mid,
-        "width_cal_mid": width_mid,
-        "n_mid": float(n_mid),
-        "coverage_cal_high": cov_high,
-        "width_cal_high": width_high,
-        "n_high": float(n_high),
+        "coverage_cal_roll": coverage_roll,
+        "width_cal_roll": width_roll,
+        "coverage_cal_roll_recent40": coverage_roll_recent,
+        "width_cal_roll_recent40": width_roll_recent,
+        "coverage_cal_recent40": coverage_cal_recent,
+        "width_cal_recent40": width_cal_recent,
         "coverage_resid_naive": float(np.mean((y_true >= low_naive) & (y_true <= high_naive))),
         "width_resid_naive": float(np.mean(high_naive - low_naive)),
         "coverage_resid_p50": float(np.mean((y_true >= low_p50) & (y_true <= high_p50))),

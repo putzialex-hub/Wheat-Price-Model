@@ -54,3 +54,12 @@ def conformal_qhat_residual(y_true: np.ndarray, y_center: np.ndarray, alpha: flo
 
 def apply_residual_interval(center: np.ndarray, q_hat: float) -> tuple[np.ndarray, np.ndarray]:
     return center - q_hat, center + q_hat
+
+
+def rolling_pool_append(pool: list[float], new_scores: np.ndarray, max_size: int) -> list[float]:
+    scores = np.asarray(new_scores, dtype=float)
+    scores = scores[np.isfinite(scores)]
+    pool.extend(scores.tolist())
+    if max_size > 0 and len(pool) > max_size:
+        pool = pool[-max_size:]
+    return pool
