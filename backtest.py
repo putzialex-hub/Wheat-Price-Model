@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from config import ModelSpec
+import os
 from target_utils import from_target, to_target
 from collections import deque
 
@@ -127,6 +128,7 @@ def walk_forward_by_quarter(
         raise ValueError("calibration_mode must be one of: per_fold, pooled, rolling")
 
     df = meta.copy()
+    df["y_true"] = df["y_true_price"].values
     df["y_true_target"] = y.values
     df["row_id"] = np.arange(len(df))
     df = df.sort_values(["qend_date", "asof_date"]).reset_index(drop=True)
@@ -402,5 +404,9 @@ def walk_forward_by_quarter(
                 "MAPE_hybrid_ridge": _mape(y_true, y_pred_hybrid_ridge),
             }
         )
+
+    if os.environ.get("WHEAT_DEBUG_TARGET") == "1":
+        print("Debug y_pred_target_p50:\n", pd.Series(y_pred_target_p50).describe())
+        print("Debug y_pred_p50 (price):\n", pd.Series(y_pred_p50).describe())
 
     return BacktestResult(predictions=preds, metrics=metrics)

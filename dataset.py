@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import List, Tuple
+import os
 
 import numpy as np
 import pandas as pd
@@ -126,5 +127,16 @@ def build_quarter_end_dataset(
 
     # Basic cleanup: drop columns with all-missing
     X = X.dropna(axis=1, how="all")
+
+    if target_mode == "level":
+        y_price = meta["y_true_price"].to_numpy(dtype=float)
+        y_target = meta["y_true_target"].to_numpy(dtype=float)
+        mask = np.isfinite(y_price) & np.isfinite(y_target)
+        if not np.allclose(y_price[mask], y_target[mask], rtol=1e-6, atol=1e-6):
+            raise ValueError("level target_mode mismatch: y_true_target != y_true_price")
+
+    if os.environ.get("WHEAT_DEBUG_TARGET") == "1":
+        print("Debug y_true_price:\n", meta["y_true_price"].describe())
+        print("Debug y_true_target:\n", meta["y_true_target"].describe())
 
     return DatasetOutput(X=X, y=y, meta=meta)

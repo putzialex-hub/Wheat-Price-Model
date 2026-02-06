@@ -110,6 +110,11 @@ def run_training_pipeline(
         target_mode=target_mode,
     )
 
+    if ds.X.isna().mean().max() > 0.5:
+        raise ValueError("Feature matrix has too many NaNs (>50% in a column). Check inputs/features.")
+    if ds.X.nunique(dropna=True).max() <= 1:
+        raise ValueError("Feature matrix has near-zero variance. Check inputs/features.")
+
     # Backtest
     bt = walk_forward_by_quarter(
         ds.X,
